@@ -5,12 +5,14 @@ from pathlib import Path
 from Bio import SeqIO
 import dask 
 import dask.bag as db
+import glob
 
 from process_gffs import get_neighborhoodIDs_wGFF
 from process_gffs import get_protseq_frmFasta
+from process_gffs import gff2pandas
 
 def get_allgffs(path_to_gffs,pickle_path):
-    # I should implement this w/ dask instead of multiprocessing
+    # Convert all gffs in path_to_gffs into a pandas dataframe and parllelize w/ dask
     start_time = time.time()
     gffs = glob.glob(path_to_gffs)
     gffs = db.from_sequence(gffs[:200])
@@ -20,27 +22,29 @@ def get_allgffs(path_to_gffs,pickle_path):
     if not pickle_file.is_file(): #check if pickle file exists so it doesn't get written over
         all_gffs.compute()
         fileObj = open(pickle_path, 'wb')
-        pickle.dump(all_gffs, fileObj)
+        cPickle.dump(all_gffs, fileObj)
         fileObj.close()
     else: print('pickle file with same name already exists')
+    gffs = gffs.compute()
     print(f"--- %s seconds --- for {len(gffs)} gffs" % (time.time() - start_time))
     return all_gffs
 
 def run_neighborhoods(gff_df,vf_fasta_withIDs,pickle_neighborhood): 
+    # Create object that creates all neighborhoods identified in gff_dfs
     start_time = time.time()
     #get protein ids from vfdb fasta
     vf_fasta = SeqIO.parse(vf_fasta_withIDs,'fasta')
     ids =  list(map(lambda x: x.id.split('gb|')[1].split(')')[0],vf_fasta))
     print('!!! VF IDs identified!!!')
-    if not isinstance(gff_df, pd.DataFrame):
+    if not isinstance(gff_df, db.core.Bag):
         assert Path(gff_df).is_file()
         file = open(gff_df, 'rb')
-        all_gffs = cPickle.load(file)
+        gff_df = cPickle.load(file)
         file.close()
         print('!!! GFF df loaded from pickle!!!')
-        all_gffs = db.from_sequence(all_gffs)
-    neighborhood_db = db.map(get_neighborhoodIDs_wGFF,ids,all_gffs,10000)
-    del all_gffs #remove this variable cus it prolly takes up an f ton of memory
+        gff_df = db.from_sequence(gff_df)
+    neighborhood_db = db.map(get_neighborhoodIDs_wGFF,ids,gff_df,10000)
+    del gff_df #remove this variable cus it prolly takes up an f ton of memory
     neighborhood_db = neighborhood_db.filter(lambda x: x is not None).persist()
     neighborhood_db = neighborhood_db.filter(lambda x: len(x)>0).persist()
     neighborhood_db = neighborhood_db.flatten().persist()
@@ -56,6 +60,7 @@ def run_neighborhoods(gff_df,vf_fasta_withIDs,pickle_neighborhood):
 
 
 def run_fasta_from_neighborhood(dir_for_fasta,neighborhood,fltr_neighborhoods):
+    # Create protein fasta from neighborhoods
     #modify this func to output fastas in a separate directory
     start_time = time.time()
     og_neighborhood_size = len(list(neighborhood))
@@ -70,7 +75,7 @@ def run_fasta_from_neighborhood(dir_for_fasta,neighborhood,fltr_neighborhoods):
 def run_all():
     if __name__ == "__main__":
         all_gffs = get_allgffs(path_to_gffs='/gpfs/data/pirontilab/Students/Madu/bigdreams_dl/testrun/ab_fastas_gffs/*.gff',pickle_path='ab_gffs_df.obj')
-        neighborhood_db = run_neighborhoods(gff_df=all_gffs,vf_fasta_withIDs='/gpfs/data/pirontilab/Students/Madu/bigdreams_dl/vfdb_ab_sub.fasta',pickle_file_name='neighborhoods_gathrd_allab.obj')
+        neighborhood_db = run_neighborhoods(gff_df=all_gffs,vf_fasta_withIDs='/gpfs/data/pirontilab/Students/Madu/bigdreams_dl/vfdb_ab_sub.fasta',pickle_neighborhood='neighborhoods_gathrd_allab.obj')
         run_fasta_from_neighborhood(dir_for_fasta='/gpfs/data/pirontilab/Students/Madu/bigdreams_dl/testrun/ab_fastas_gffs/',neighborhood=neighborhood_db,fltr_neighborhoods=True)
 
 run_all()
