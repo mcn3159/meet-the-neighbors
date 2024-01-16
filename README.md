@@ -11,4 +11,13 @@ Large scale identification of genomic neighbors in bacterial genomes. This progr
 - Plots a scatter plot of neighborhood results
 - To be Continued...
 
-Currently a work in prograss, needs to update environment.yml as well as adda simple way to install. 
+### Running Program
+
+git clone meet-the-neighbors
+
+conda env create -f environment.yml
+
+conda activate meet-the-neighbors
+
+python main.py --query_fasta fquery_fasta.faa --out output_dir --mem
+
