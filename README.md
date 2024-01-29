@@ -12,12 +12,27 @@ Large scale identification of genomic neighbors in bacterial genomes. This progr
 - To be Continued...
 
 ### Running Program
+```
+git clone
+```
 
-git clone meet-the-neighbors
-
+Activate the conda environment
+```
 conda env create -f environment.yml
-
 conda activate meet-the-neighbors
+```
 
-python main.py --query_fasta fquery_fasta.faa --out output_dir --mem
+Basic run command 
+```
+python main.py extract_neighbors --query_fasta dir/to/queries.fasta --genomes dir/to/genomes_to_search --out dir/to/out_directory --plot
+```
+Each genome to extract the neighborhoods from must occur in a gff and protein fasta formats, with the same file name followed by an underscore _genomic or _protein respectively.
+For example:
+
+```
+cd genomes/
+
+GCA_000307975.2_ASM30797v2_genomic.gff
+GCA_000307975.2_ASM30797v2_protein.faa
+...
 
