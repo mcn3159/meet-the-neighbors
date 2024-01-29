@@ -8,6 +8,7 @@ import dask.bag as db
 from dask.dataframe import from_pandas
 import _pickle as cPickle
 import time
+from collections import defaultdict
 
 from process_gffs import gff2pandas
 from process_gffs import get_protseq_frmFasta
@@ -22,17 +23,16 @@ def read_mmseqs_tsv(**kwargs):
     mmseqs_search_res = kwargs.get("input_mmseqs",None)
     headers = ['query','target','evalue','pident','qcov','fident','alnlen','qheader','theader','tset','tsetid']
     partitions = kwargs.get("threads",4)
+    mmseqs = pd.read_csv(mmseqs_search_res,sep='\t')
+    if mmseqs.columns[-1] != 'tsetid': mmseqs.columns == headers
     if vfdb:
         #extract vf annots from columns
-        mmseqs = pd.read_csv(mmseqs_search_res,sep='\t',names=headers)
         pattern = r"(\) .* \[)([^\]]+)\s*\(([^)]+)\)\s*-\s*([^\]]+)\(" #use https://regex101.com/ to see what pattern is doing
         mmseqs[['vf_name','vf_subcategory','vf_id','vf_category']] = mmseqs['qheader'].str.extract(pattern)
         pattern = r"\) (.+?) \["
         mmseqs['vf_name'] = mmseqs.vf_name.str.extract(pattern)
-        mmseqs.to_csv(mmseqs_search_res,sep='\t',index=False)
-    else:
-        mmseqs = pd.read_csv(mmseqs_search_res,sep='\t',names=headers)
-        mmseqs.to_csv(mmseqs_search_res,index=False,headers=True,sep='\t')
+        
+    mmseqs.to_csv(mmseqs_search_res,index=False,header=True,sep='\t')
     mmseqs_grp = mmseqs.groupby('tset') # grouped vf hits by fasta where hits were found
     mmseqs_l = list(mmseqs_grp) #turning it into a list so I can send it to a dask bag
     #turning into list b/c dask_df_apply(func) is a literal pain in the ass to use
@@ -70,7 +70,6 @@ def get_neigborhood(mmseqs_group,dir_for_gffs,window):
 def run_fasta_from_neighborhood(dir_for_fasta,neighborhood,**kwargs):
     # Create protein fasta from neighborhoods
     #modify this func to output fastas in a separate directory
-    start_time = time.time()
     test = kwargs.get("test",None)
     partitions = kwargs.get("threads",4)
     out_folder = kwargs.get("out_folder","") # the alternative is blank so that the outdir is the current working directory
@@ -81,20 +80,10 @@ def run_fasta_from_neighborhood(dir_for_fasta,neighborhood,**kwargs):
         file.close()
         print("!!!Neighborhoods loaded from pickle!!!")
         neighborhood = db.from_sequence(neighborhood,npartitions=partitions)
-        #uncomment below if pikled object has empty neighborhoods
-        #neighborhood = neighborhood.filter(lambda x: x is not None) 
-        #neighborhood = neighborhood.filter(lambda x: len(x)>0)
-        #neighborhood = neighborhood.flatten().persist()
 
-    run_fasta = db.map(get_protseq_frmFasta,dir_for_fasta,neighborhood,to_fasta=fasta_per_neighborhood)
-    if fasta_per_neighborhood:
-        run_fasta.compute()
-        print(f"--- %s seconds --- for creating fastas" % (time.time() - start_time))
-        return
-    run_fasta = run_fasta.flatten().repartition(partitions)
-    #if len(out_folder)>1: out_folder + '/'
-    run_fasta.to_textfiles(f"{out_folder}combined_fasta_partition*.faa")
-    print(f"--- %s seconds --- for creating fastas" % (time.time() - start_time))
+    seq_recs = db.map(get_protseq_frmFasta,dir_for_fasta,neighborhood,fasta_per_neighborhood=fasta_per_neighborhood)
+    seq_recs.flatten().repartition(partitions).to_textfiles(f"{out_folder}combined_fasta_partition*.faa")
+    
     return
 
 def run():

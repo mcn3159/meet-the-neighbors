@@ -53,7 +53,7 @@ def get_neighborhoodIDs_wGFF(specific_ids,df,window):
         return None
     return neighborhoods
 
-def get_protseq_frmFasta(dir_for_fastas,neighborhood,to_fasta):
+def get_protseq_frmFasta(dir_for_fastas,neighborhood,fasta_per_neighborhood):
     if dir_for_fastas[-1] != '/':
         dir_for_fastas += '/'
     try:
@@ -62,8 +62,10 @@ def get_protseq_frmFasta(dir_for_fastas,neighborhood,to_fasta):
         fasta = SeqIO.parse(fasta_dir,'fasta')
         rec = filter(lambda x: x.id in list(neighborhood.protein_id),fasta) # subset originial fasta for ids in neighborhood
         rec = map(lambda x: SeqRecord(x.seq,id=
-                                    x.id+f'----{neighborhood_name}',description=x.description.split(f'{x.id} ')[1]),rec)
-        if to_fasta: #make sure to_fasta is either False, or the name of the file when running
+                                    x.id+f'----{neighborhood_name}',description=x.description.split(f'{x.id} ')[1]+
+                                    f"--start:{neighborhood[neighborhood['protein_id']==x.id]['start'].values[0]}"+
+                                    f"--strand:{neighborhood[neighborhood['protein_id']==x.id]['strand'].values[0]}"),rec)
+        if fasta_per_neighborhood: #make sure to_fasta is either False, or the name of the file when running
             neighborhood_fasta_name = neighborhood_name + '.faa'
             if Path(neighborhood_fasta_name).is_file():
                 print('Neighborhood fasta with same name already exists')
@@ -76,5 +78,3 @@ def get_protseq_frmFasta(dir_for_fastas,neighborhood,to_fasta):
         traceback.print_exc()
         print('Item did not contain neighborhood')
         return
-    return
-

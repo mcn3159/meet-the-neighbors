@@ -31,6 +31,9 @@ class VF_neighborhoods:
     def neighborhood_freqs(self):
         unique_neighborhoods = self.cdhit_sub_piv.groupby(self.cdhit_sub_piv.columns.to_list(),as_index=False).size() # https://stackoverflow.com/questions/35584085/how-to-count-duplicate-rows-in-pandas-dataframe
         return entropy(unique_neighborhoods['size'].to_numpy())
+    
+    def get_neighborhood_names(self):
+        return list(self.cdhit_sub_piv.index.values)
 
     def to_dict(self):
         self.dist_matrix, self.unique_hits = self.create_dist_matrix()
