@@ -1,14 +1,9 @@
 import pandas as pd
-import sys
-from Bio import SeqIO
 import argparse
 import re
 import dask
 import dask.bag as db
-from dask.dataframe import from_pandas
 import _pickle as cPickle
-import time
-from collections import defaultdict
 
 from process_gffs import gff2pandas
 from process_gffs import get_protseq_frmFasta
@@ -23,15 +18,16 @@ def read_mmseqs_tsv(**kwargs):
     mmseqs_search_res = kwargs.get("input_mmseqs",None)
     headers = ['query','target','evalue','pident','qcov','fident','alnlen','qheader','theader','tset','tsetid']
     partitions = kwargs.get("threads",4)
-    mmseqs = pd.read_csv(mmseqs_search_res,sep='\t')
-    if mmseqs.columns[-1] != 'tsetid': mmseqs.columns == headers
+    mmseqs = dask.dataframe.read_csv(mmseqs_search_res,sep='\t')
+    mmseqs = mmseqs.compute()
+    if (mmseqs.columns[-1] != 'tsetid') and (mmseqs.columns[-1] != 'vf_category'): mmseqs.columns = headers
     if vfdb:
         #extract vf annots from columns
         pattern = r"(\) .* \[)([^\]]+)\s*\(([^)]+)\)\s*-\s*([^\]]+)\(" #use https://regex101.com/ to see what pattern is doing
         mmseqs[['vf_name','vf_subcategory','vf_id','vf_category']] = mmseqs['qheader'].str.extract(pattern)
         pattern = r"\) (.+?) \["
         mmseqs['vf_name'] = mmseqs.vf_name.str.extract(pattern)
-        
+
     mmseqs.to_csv(mmseqs_search_res,index=False,header=True,sep='\t')
     mmseqs_grp = mmseqs.groupby('tset') # grouped vf hits by fasta where hits were found
     mmseqs_l = list(mmseqs_grp) #turning it into a list so I can send it to a dask bag
