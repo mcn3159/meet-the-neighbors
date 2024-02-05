@@ -24,10 +24,14 @@ def get_glm_input(query,uniq_neighborhoods_d,out_dir,neighborhood_res):
             neighborhood_name_prots[neighborhood_name] = neighborhood_name_prots[neighborhood_name] + strand + rec[0].id
     df = pd.DataFrame.from_dict([neighborhood_name_prots]).T
     df.columns=['neighborhood']
+
     if neighborhood_res.columns[-1] == "vf_category":
         neighborhood_res = neighborhood_res[neighborhood_res["vf_id"] == query][['vf_id','vf_subcategory','vf_category']]
         df["vf_id"],df["vf_subcategory"],df["vf_category"] = neighborhood_res.iloc[0][0],neighborhood_res.iloc[0][1],neighborhood_res.iloc[0][2]
     else:
         df["vf_id"],df["vf_subcategory"],df["vf_category"] = "non_vf","non_vf","non_vf"
     df.to_csv(f"{out_dir}glm_inputs/{query}_{neighborhood_name}.tsv",sep='\t',header=True)
+
+    with open(f"{out_dir}glm_inputs/{query}_{neighborhood_name}.fasta","w") as handle: #tsv and fasta files should have the same name
+        SeqIO.write([rec_tuple[0] for rec_tuple in fasta_filt], handle, "fasta")
     return 
