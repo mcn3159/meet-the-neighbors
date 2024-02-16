@@ -55,17 +55,22 @@ def prep_mmseqs_tsv(mmseqs_res_dir):
     #run for mmseqs clustered results
     #example res: '/Users/mn3159/bigpurple/data/pirontilab/Students/Madu/bigdreams_dl/neighborhood_call/neighbors_rand5k/neighbors_rand5k_clust_res.tsv'
     mmseqs = dd.read_csv(mmseqs_res_dir,sep='\t',names=['rep','locus_tag'])
+    
 
-    cluster_names = {rep:f"Cluster_{i}" for i,rep in enumerate(set(mmseqs.rep))}
-    mmseqs['cluster'] = mmseqs['rep'].map(cluster_names)
-
-    mmseqs['VF_center'],mmseqs['gff'],mmseqs['seq_id'],mmseqs['locus_range'] = mmseqs['locus_tag'].str.split('----').str[1],\
+    mmseqs['VF_center'],mmseqs['gff'],mmseqs['seq_id'],mmseqs['locus_range'],mmseqs['start'], mmseqs['strand']= mmseqs['locus_tag'].str.split('----').str[1],\
                                                                                mmseqs['locus_tag'].str.split('----').str[2],\
                                                                                mmseqs['locus_tag'].str.split('----').str[3],\
-                                                                               mmseqs['locus_tag'].str.split('----').str[4]
+                                                                               mmseqs['locus_tag'].str.split('----').str[4],\
+                                                                               mmseqs['locus_tag'].str.split('----').str[5],\
+                                                                               mmseqs['locus_tag'].str.split('----').str[6]
     mmseqs['neighborhood_name'] = mmseqs['locus_tag'].str.split('----',n=1).str[1]
+    
+    mmseqs = mmseqs.compute()
+    cluster_names = {rep:f"Cluster_{i}" for i,rep in enumerate(set(list(mmseqs.rep)))} #can't list and loop mmseqs col with dask, so I have to compute first
+    mmseqs['cluster'] = mmseqs['rep'].map(cluster_names)
 
     print(f"Size of mmseqs cluster results: {mmseqs.shape}")
+    
     #mmseqs.head()
     return mmseqs
 
@@ -83,13 +88,18 @@ def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb):
         mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','vfname_gffname']],on='vfname_gffname')
     return mmseqs_clust
 
-def plt_neighborhoods(neighborhood_plt_df,out):
+def plt_neighborhoods(neighborhood_plt_df,out,vfdb):
     #hovering over bubbles may show same type of vf but each bubble is a diff vf query
     #alot of this code is from: https://stackoverflow.com/questions/71694358/bubble-size-legend-with-python-plotly
 
-    fig1 = px.scatter(neighborhood_plt_df, x="unique_hits", y="total_hits",
-                size="bubble_size", color="vf_category",log_x=True,log_y=True,
-                    hover_name="vf_subcategory")
+    if vfdb: 
+        fig1 = px.scatter(neighborhood_plt_df, x="unique_hits", y="total_hits",
+                    size="bubble_size", color="vf_category",log_x=True,log_y=True,
+                        hover_name="vf_subcategory")
+    else: 
+        fig1 = px.scatter(neighborhood_plt_df, x="unique_hits", y="total_hits",
+                    size="bubble_size",log_x=True,log_y=True,
+                        hover_name="query")
 
     sizeref = 2.*max(neighborhood_plt_df['bubble_size'])/(80**2)
 
