@@ -57,14 +57,14 @@ def get_protseq_frmFasta(dir_for_fastas,neighborhood,fasta_per_neighborhood):
     if dir_for_fastas[-1] != '/':
         dir_for_fastas += '/'
     try:
-        neighborhood_name = f'{neighborhood.iloc[0].VF_center}----{neighborhood.iloc[0].gff_name}----{neighborhood.iloc[0].seq_id}----{neighborhood.iloc[0].start}-{neighborhood.iloc[-1].end}'
+        neighborhood_name = f'{neighborhood.iloc[0].VF_center}!!!{neighborhood.iloc[0].gff_name}!!!{neighborhood.iloc[0].seq_id}!!!{neighborhood.iloc[0].start}-{neighborhood.iloc[-1].end}'
         fasta_dir = dir_for_fastas+neighborhood.iloc[0].gff_name+'_protein.faa'
         fasta = SeqIO.parse(fasta_dir,'fasta')
         rec = filter(lambda x: x.id in list(neighborhood.protein_id),fasta) # subset originial fasta for ids in neighborhood
         # protein ids need this info for glm input and for later processing
         rec = map(lambda x: SeqRecord(x.seq,id=
-                                    x.id+f'----{neighborhood_name}'+f'----{neighborhood[neighborhood["protein_id"]==x.id]["start"].values[0]}'+
-                                    f"----{neighborhood[neighborhood['protein_id']==x.id]['strand'].values[0]}"
+                                    x.id+f'!!!{neighborhood_name}'+f'!!!{neighborhood[neighborhood["protein_id"]==x.id]["start"].values[0]}'+
+                                    f"!!!{neighborhood[neighborhood['protein_id']==x.id]['strand'].values[0]}"
                                     ,description=x.description.split(f'{x.id} ')[1]),rec)
         if fasta_per_neighborhood: #make sure to_fasta is either False, or the name of the file when running
             neighborhood_fasta_name = neighborhood_name + '.faa'
