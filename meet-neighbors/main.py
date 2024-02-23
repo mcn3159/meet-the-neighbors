@@ -13,7 +13,7 @@ import neighbors_frm_mmseqs as n
 import plot_map_neighborhood_res as pn
 import compare_neighborhoods as c
 import glm_input_frm_neighbors as glm
-
+# need to fix plotting function and make sure it works on non_vfs
 def get_parser():
     parser = argparse.ArgumentParser("neighbors",argument_default=argparse.SUPPRESS,description="Meet-the-neighbors extracts and analyzes genomic neighborhoods and runs analyses from protein fastas and their respective gffs",epilog="Madu Nzerem 2023")
     subparsers = parser.add_subparsers(help='Sub-command options',dest="subcommand")
@@ -29,15 +29,16 @@ def get_parser():
     extract_neighbors.add_argument("--test_fastas", type=str, required=False, default=None, help="Run with test fastas?")
     extract_neighbors.add_argument("--fasta_per_neighborhood", required=False, type=str, default=None, help="To get one fasta per neighborhood")
     extract_neighbors.add_argument("--from_vfdb","-v",required=False,action="store_true",help="Indicate if search queries are solely from vfdb, to then group by their vf_id")
-    extract_neighbors.add_argument("--min_hits","-min",required=False,type=int,default=5,help="Minimum number of hits required to report neighborhood")
+    extract_neighbors.add_argument("--min_hits","-mih",required=False,type=int,default=5,help="Minimum number of genomes required to report neighborhood")
     extract_neighbors.add_argument("--resume","-r",required=False,action="store_true",help="Resume where program Neighbors left off. Output directory must be the same")
     extract_neighbors.add_argument("--glm",required=False,action="store_true",help="Create output formatted for glm input.")
     extract_neighbors.add_argument("--glm_threshold",type=str,default=0.95,required=False,help="Sets threshold for the minimal percent difference between neighborhoods to be returned, for a given query")
     #should make an option to load a mmseqs genomes database instead of creating the same one everytime
     extract_neighbors.add_argument("--plot","-p",action="store_true", required=False, default=None, help="Plot data")
     extract_neighbors.add_argument("--plt_from_saved","-pfs",type=str, required=False, default=None, help="Plot from a saved neighborhood tsv")
+    extract_neighbors.add_argument("--neighborhood_size","-ns",type=int, required=False, default=20000, help="Size in bp of neighborhood to extract")
+    extract_neighbors.add_argument("--min_prots","-mip",type=int, required=False, default=3, help="Minimum number of proteins in neighborhood")
 
-    
     comp_neighbors = subparsers.add_parser("compare_neighborhoods",help="Compare multiple neighborhood tsvs")
     comp_neighbors.add_argument('--neighborhood1','-n1',type=str,required=True,help="Give full path to 1st neighborhood to compare")
     comp_neighbors.add_argument('--neighborhood2','-n2',type=str,required=True,help="Give full path to 2nd neighborhood to compare")
@@ -73,7 +74,7 @@ def run(parser):
             
             if (not os.path.isfile(f"{args.out}combined_fastas_clust_res.tsv") and args.resume) or (not args.resume):
                 mmseqs_grp_db,mmseqs_search = n.read_mmseqs_tsv(vfdb=args.from_vfdb,input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
-                neighborhood_db = db.map(n.get_neigborhood,mmseqs_grp_db,args.genomes,10000)
+                neighborhood_db = db.map(n.get_neigborhood,mmseqs_grp_db,args.genomes,args.neighborhood_size,args.min_prots)
                 neighborhood_db = neighborhood_db.flatten()
                 n.run_fasta_from_neighborhood(dir_for_fasta=args.genomes,neighborhood=neighborhood_db,
                                             fasta_per_uniq_neighborhood=args.fasta_per_neighborhood,out_folder=args.out,test=args.test_fastas,threads=args.threads)
@@ -109,18 +110,19 @@ def run(parser):
 
             if args.glm:
                 glm_input_out = f"glm_inputs/"
-                subprocess.run(f"mkdir {args.out}{glm_input_out}",shell=True,check=True) #should return an error if the path already exists
-                uniq_neighborhoods_d = {query:class_objs[query].get_neighborhood_names(args.glm_threshold) for query in class_objs}
+                subprocess.run(f"mkdir {args.out}{glm_input_out}",shell=True,check=True) #should return an error if the path already exists, don't want to make duplicates
+                if not os.path.isfile(f"{args.out}combined_fastas_clust_rep.fasta"):
+                    subprocess.run(f"mmseqs createsubdb {args.out}combined_fastas_clust {args.out}combined_fastas_db {args.out}combined_fastas_clust_rep",shell=True,check=True)
+                    subprocess.run(f"mmseqs convert2fasta {args.out}combined_fastas_clust_rep {args.out}combined_fastas_clust_rep.fasta",shell=True,check=True)
                 print("!!!Grabbing glm inputs!!!")
-                if os.path.isfile(f"{args.out}combined_fasta_partition00.faa"):
-                    subprocess.run(f"cat {args.out}combined_fasta_partition* > {args.out}all_neighborhoods.fasta",shell=True,check=True)
-                    subprocess.run(f"rm {args.out}combined_fasta_partition*",shell=True,check=True)
-                
-                db.map(glm.get_glm_input,query=db.from_sequence(uniq_neighborhoods_d.keys()),uniq_neighborhoods_d=uniq_neighborhoods_d,out_dir=args.out,neighborhood_res=neighborhood_plt_df).persist()
+
+                uniq_neighborhoods_d = {query:class_objs[query].get_neighborhood_names(args.glm_threshold) for query in class_objs}
+                db.map(glm.get_glm_input,query=db.from_sequence(uniq_neighborhoods_d.keys()),
+                       uniq_neighborhoods_d=uniq_neighborhoods_d,neighborhood_res=neighborhood_plt_df,mmseqs_clust=mmseqs_clust,args=args).persist()
         elif args.plt_from_saved:
             neighborhood_plt_df = pd.read_csv(args.plt_from_saved,sep='\t')
         if args.plot:
-            pn.plt_neighborhoods(neighborhood_plt_df,args.out)
+            pn.plt_neighborhoods(neighborhood_plt_df,args.out,vfdb=args.from_vfdb)
             pn.plt_hist_neighborh_clusts(neighborhood_plt_df,args.out)
             pn.plt_regline_scatter(neighborhood_plt_df,args.out)
     
