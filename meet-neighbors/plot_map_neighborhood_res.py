@@ -43,7 +43,7 @@ class VF_neighborhoods:
         self.clusters, self.noise = self.calc_clusters()
         self.entropy = self.neighborhood_freqs()
         return {
-            "vf_query" : self.VF_center,
+            "query" : self.VF_center,
             "total_hits" : self.total_hits,
             "unique_hits" : self.unique_hits,
             "clusters" : self.clusters,
@@ -74,20 +74,39 @@ def prep_mmseqs_tsv(mmseqs_res_dir):
     #mmseqs.head()
     return mmseqs
 
-def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb):
+def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search):
     # map query search hits to each target neighborhood in the cluster df
     # what if the same protein fasta has multiple proteins with the same name
     prepped_mmseqs_clust['vfname_gffname'] = prepped_mmseqs_clust['VF_center'] + '!!!' + prepped_mmseqs_clust['gff']
     mmseqs_search['gff_name'] = mmseqs_search.tset.str.split('_protein.faa').str[0]
     mmseqs_search['vfname_gffname'] = mmseqs_search['target'] + '!!!' + mmseqs_search['gff_name']
-    if vfdb:
-        mmseqs_clust = dd.merge(prepped_mmseqs_clust,
-                            mmseqs_search[['query','vfname_gffname', 'vf_name', 'vf_subcategory', 'vf_id', 'vf_category']],
-                            on='vfname_gffname')
-    else:
-        mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','vfname_gffname']],on='vfname_gffname')
+    mmseqs_search.drop_duplicates(subset=['vfname_gffname'],inplace=True)
+    mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','vfname_gffname']],on='vfname_gffname')
     mmseqs_clust.head()
     return mmseqs_clust
+
+def reduce_overlap(mmseqs_clust_sub,window):
+    # reduce overlapping neighborhood given window
+    similar_range_neighbors = {}
+    for ran in set(mmseqs_clust_sub[1].locus_range):
+        if len(similar_range_neighbors) == 0: 
+            similar_range_neighbors[int(ran.split("-")[0])] = [ran]
+            continue
+        
+        keys_array = np.array(list(similar_range_neighbors.keys()))
+        keys_array_sub = np.absolute(keys_array - int(ran.split("-")[0])) < window
+        res_ind = (keys_array_sub).nonzero()
+        if np.size(res_ind) == 1:
+            similar_range_neighbors[keys_array[res_ind[0]][0]].append(ran)
+        
+        else:
+            similar_range_neighbors[int(ran.split("-")[0])] = [ran]
+
+    mmseqs_clust_sub_copy = mmseqs_clust_sub[1].copy()
+    mmseqs_clust_sub_copy["neighborhood_start"] = mmseqs_clust_sub_copy["locus_range"].str.split("-").str[0]
+    mmseqs_clust_sub_copy["neighborhood_start"] = pd.to_numeric(mmseqs_clust_sub_copy["neighborhood_start"])
+    mmseqs_clust_sub_copy = mmseqs_clust_sub_copy[mmseqs_clust_sub_copy['neighborhood_start'].isin(list(similar_range_neighbors.keys()))]
+    return mmseqs_clust_sub_copy
 
 def plt_neighborhoods(neighborhood_plt_df,out,vfdb):
     #hovering over bubbles may show same type of vf but each bubble is a diff vf query
@@ -156,6 +175,17 @@ def plt_regline_scatter(neighborhood_plt_df,out):
     slope = str(results.iloc[0]["px_fit_results"].params[1])[:5] # https://stackoverflow.com/questions/63341840/plotly-how-to-find-coefficient-of-trendline-in-plotly-express
     fig.write_html(f"{out}scatter_trendline_{slope}_slope.html")
     return results
+
+def plt_box_entropy(neighborhood_plt_df,out,vfdb):
+    if vfdb:
+        x = "vf_subcategory"
+    else:
+        x = "query"
+    fig = px.box(neighborhood_plt_df,x=x,y="entropy",points='all',
+                 title=f"Entropies across {x}")
+    fig.write_html(f"{out}entropies_on_{x}.html")
+    return
+
     
 def run():
     if __name__ == "__main__":
