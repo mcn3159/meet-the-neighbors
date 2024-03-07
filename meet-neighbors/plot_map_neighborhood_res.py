@@ -102,6 +102,7 @@ def reduce_overlap(mmseqs_clust_sub,window):
         else:
             similar_range_neighbors[int(ran.split("-")[0])] = [ran]
 
+    similar_range_neighbors = {int(np.quantile([int(r.split("-")[0]) for r in v],q=.5,method="lower")):v for k,v in similar_range_neighbors.items()} # Want the overlapping neighborhood reps to be the middle neighborhood
     mmseqs_clust_sub_copy = mmseqs_clust_sub[1].copy()
     mmseqs_clust_sub_copy["neighborhood_start"] = mmseqs_clust_sub_copy["locus_range"].str.split("-").str[0]
     mmseqs_clust_sub_copy["neighborhood_start"] = pd.to_numeric(mmseqs_clust_sub_copy["neighborhood_start"])

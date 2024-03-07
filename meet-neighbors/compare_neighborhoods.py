@@ -40,11 +40,11 @@ def compare_uniqhits_trends(*args,**kwargs):
     fig = px.scatter(concat_neighborhoods, x="total_hits", y="unique_hits", color="Group", trendline="ols")
     if write_table:
         results = px.get_trendline_results(fig)
-        f = open(f"{results.Group.iloc[0]}_regression_results.txt","w")
+        f = open(f"{out}{results.Group.iloc[0]}_regression_results.txt","w")
         print(results.px_fit_results.iloc[0].summary(),file=f)
         f.close()
 
-        f = open(f"{results.Group.iloc[1]}_regression_results.txt","w")
+        f = open(f"{out}{results.Group.iloc[1]}_regression_results.txt","w")
         print(results.px_fit_results.iloc[1].summary(),file=f)
         f.close()
     fig.write_html(f"{out}Multiple_trendlines_scatter.html")
