@@ -47,7 +47,10 @@ def get_neigborhood(mmseqs_group,args):
     window = args.neighborhood_size/2
     neighborhoods = []
     for row in vf_centers.itertuples():
-        gff_df_strand = gff_df[(gff_df['strand'] == row.strand) & (gff_df['seq_id'] == row.seq_id)]
+        if args.head_on:
+            gff_df_strand = gff_df[gff_df['seq_id'] == row.seq_id]
+        else:
+            gff_df_strand = gff_df[(gff_df['strand'] == row.strand) & (gff_df['seq_id'] == row.seq_id)]
         neighborhood_df = gff_df_strand.copy()
         neighborhood_df = neighborhood_df[
             (neighborhood_df['start'] >= row.start - window) &
