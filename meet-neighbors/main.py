@@ -13,7 +13,7 @@ import neighbors_frm_mmseqs as n
 import plot_map_neighborhood_res as pn
 import compare_neighborhoods as c
 import glm_input_frm_neighbors as glm
-# need to fix plotting function and make sure it works on non_vfs
+
 def get_parser():
     parser = argparse.ArgumentParser("neighbors",argument_default=argparse.SUPPRESS,description="Meet-the-neighbors extracts and analyzes genomic neighborhoods and runs analyses from protein fastas and their respective gffs",epilog="Madu Nzerem 2023")
     subparsers = parser.add_subparsers(help='Sub-command options',dest="subcommand")

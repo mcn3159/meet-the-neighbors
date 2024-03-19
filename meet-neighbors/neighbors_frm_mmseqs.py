@@ -27,6 +27,9 @@ def read_mmseqs_tsv(**kwargs):
         mmseqs[['vf_name','vf_subcategory','vf_id','vf_category']] = mmseqs['qheader'].str.extract(pattern)
         pattern = r"\) (.+?) \["
         mmseqs['vf_name'] = mmseqs.vf_name.str.extract(pattern)
+        pattern = r"\[[^\]]+\]\s*\[([^\]]+)\]"
+        mmseqs['vfdb_species'] = mmseqs['qheader'].str.extract(pattern)
+        mmseqs['vfdb_genus'] = mmseqs.vfdb_species.str.split(' ').str[0]
 
     mmseqs.to_csv(mmseqs_search_res,index=False,header=True,sep='\t')
     mmseqs_grp = mmseqs.groupby('tset') # grouped vf hits by fasta where hits were found
