@@ -20,7 +20,7 @@ def read_mmseqs_tsv(**kwargs):
     partitions = kwargs.get("threads",4)
     mmseqs = dask.dataframe.read_csv(mmseqs_search_res,sep='\t')
     mmseqs = mmseqs.compute()
-    if (mmseqs.columns[-1] != 'tsetid') and (mmseqs.columns[-1] != 'vf_category'): mmseqs.columns = headers
+    if (mmseqs.columns[-1] != 'tsetid') and (mmseqs.columns[-1] != 'vfdb_genus'): mmseqs.columns = headers
     if vfdb:
         #extract vf annots from columns
         pattern = r"(\) .* \[)([^\]]+)\s*\(([^)]+)\)\s*-\s*([^\]]+)\(" #use https://regex101.com/ to see what pattern is doing
