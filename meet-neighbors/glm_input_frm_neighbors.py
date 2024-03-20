@@ -35,7 +35,7 @@ def get_glm_input(query,uniq_neighborhoods_d,neighborhood_res,mmseqs_clust,args)
     else:
         df["vf_name"],df["vf_id"],df["vf_subcategory"],df["vf_category"] = "non_vf","non_vf","non_vf","non_vf"
     #df_name = f"{neighborhood_res.iloc[0][1].replace(' ','_').replace(')','').replace('(','').replace('/','|')}_{str(random.randint(1,10000))}_{neighborhood_name}"
-    df_name = f"{query}!!!{df['vf_subcategory'].iloc[0].replace(' ','_')}"
+    df_name = query
     df.to_csv(f"{args.out}glm_inputs/{df_name}.tsv",sep='\t',header=False,mode="x")
 
     fasta = SeqIO.parse(f"{args.out}combined_fastas_clust_rep.fasta","fasta") 
