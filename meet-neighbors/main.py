@@ -13,6 +13,7 @@ import neighbors_frm_mmseqs as n
 import plot_map_neighborhood_res as pn
 import compare_neighborhoods as c
 import glm_input_frm_neighbors as glm
+import compute_umap as cu
 
 def get_parser():
     parser = argparse.ArgumentParser("neighbors",argument_default=argparse.SUPPRESS,description="Meet-the-neighbors extracts and analyzes genomic neighborhoods and runs analyses from protein fastas and their respective gffs",epilog="Madu Nzerem 2023")
@@ -49,6 +50,14 @@ def get_parser():
     comp_neighbors.add_argument('--name2',type=str,required=True,help="Name to give neighborhood2")
     comp_neighbors.add_argument('--out','-o',type=str,default='',required=False,help="Output directory")
 
+    compute_umap = subparsers.add_parser("compute_umap",help="Compute umap from glm_outputs")
+    compute_umap.add_argument("--glm_out",type=str,required=True,help="Give directory containing glm embeddings")
+    compute_umap.add_argument("--neighborhood_run",type=str,required=True,help="Give directory containing neighborhoods used for glm inputs")
+    compute_umap.add_argument("--umap_name",type=str,required=False,default="umap",help="Filename for umap plot")
+    compute_umap.add_argument('--out','-o',type=str,default='',required=False,help="Output directory")
+    compute_umap.add_argument('--label','-l',type=str,default='vf_category',required=False,help="Column label to color umap points by. Current options are vf_category,vf_name,vf_subcategory,vfdb_species,vfdb_genus,vf_id")
+    compute_umap.add_argument('--width',type=int,default=1000,required=False,help="Width of umap plot")
+    compute_umap.add_argument('--legend',action="store_true",required=False,help="Show legend on umap plot")
     return parser
 
 def check_dirs(*args):
@@ -105,9 +114,12 @@ def run(parser):
             print(f"!!! Clustering df size after removing overlapping neighborhoods: {mmseqs_clust.shape} !!!")
             mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search)
             cluster_neighborhoods_by = "query"
+            
+            subprocess.run(f"mkdir {args.out}clust_res_in_neighborhoods",shell=True,check=True)
+            mmseqs_clust.to_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",index=False,sep="\t")
+            mmseqs_clust = mmseqs_clust.compute()
 
             warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
-            mmseqs_clust = mmseqs_clust.compute()
             class_objs = {vf:pn.VF_neighborhoods(cdhit_sub_vf=mmseqs_clust[mmseqs_clust[cluster_neighborhoods_by]==vf],dbscan_eps=0.15,dbscan_min=3)
                         for vf in set(mmseqs_clust[cluster_neighborhoods_by])}
             neighborhood_plt_df = pd.DataFrame.from_dict([class_objs[n].to_dict() for n in class_objs])
@@ -118,7 +130,7 @@ def run(parser):
                 # add vf info to neighborhood queries for glm embed color coding and other plotting
                 mmseqs_search = mmseqs_search.compute()
                 mmseqs_search.drop_duplicates(subset=["query"],inplace=True)
-                neighborhood_plt_df = pd.merge(neighborhood_plt_df,mmseqs_search[['query','vf_name','vf_id','vf_subcategory','vf_category','vfdb_species','vfdb_genus']],on='query',how='left')
+                neighborhood_plt_df = pd.merge(neighborhood_plt_df,mmseqs_search[['query','vf_name','vf_id','vf_subcategory','vf_category']],on='query',how='left')
 
             neighborhood_plt_df.to_csv(f"{args.out}neighborhood_results_df.tsv",sep='\t',index=False,header=True)
 
@@ -148,6 +160,17 @@ def run(parser):
         neighborhood1,neighborhood2 = pd.read_csv(args.neighborhood1,sep='\t'),pd.read_csv(args.neighborhood2,sep='\t')
         c.compare_neighborhood_entropy(neighborhood1,neighborhood2,label1=args.name1,label2=args.name2,out=args.out)
         c.compare_uniqhits_trends(neighborhood1,neighborhood2,label1=args.name1,label2=args.name2,out=args.out,write_table=True)
+
+    if args.subcommand == "compute_umap":
+        dirs_l = check_dirs(args.neighborhood_run,args.glm_out)
+        neighborhood_dir,glm_out = dirs_l[0],dirs_l[1]
+        mmseqs_clust = dd.read_csv(f"{neighborhood_dir}clust_res_in_neighborhoods/mmseqs_clust_*.tsv")
+        mmseqs_clust = mmseqs_clust.compute()
+        embedding_df = cu.unpack_embeddings(glm_out,mmseqs_clust)
+        umapper,embedding_df_merge = cu.get_glm_umap_df(embedding_df,mmseqs_clust)
+        cu.plt_baby(umapper,embedding_df_merge,plt_name=args.umap_name,outdir=args.outdir,
+                    legend=args.legend,width=args.width,label=args.label)
+
     print(f"Done! Took --- %s seconds --- to complete" % (time.time() - start_time))
     return
 
