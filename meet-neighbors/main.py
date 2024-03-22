@@ -13,7 +13,7 @@ import neighbors_frm_mmseqs as n
 import plot_map_neighborhood_res as pn
 import compare_neighborhoods as c
 import glm_input_frm_neighbors as glm
-# need to fix plotting function and make sure it works on non_vfs
+
 def get_parser():
     parser = argparse.ArgumentParser("neighbors",argument_default=argparse.SUPPRESS,description="Meet-the-neighbors extracts and analyzes genomic neighborhoods and runs analyses from protein fastas and their respective gffs",epilog="Madu Nzerem 2023")
     subparsers = parser.add_subparsers(help='Sub-command options',dest="subcommand")
@@ -118,7 +118,7 @@ def run(parser):
                 # add vf info to neighborhood queries for glm embed color coding and other plotting
                 mmseqs_search = mmseqs_search.compute()
                 mmseqs_search.drop_duplicates(subset=["query"],inplace=True)
-                neighborhood_plt_df = pd.merge(neighborhood_plt_df,mmseqs_search[['query','vf_name','vf_id','vf_subcategory','vf_category']],on='query',how='left')
+                neighborhood_plt_df = pd.merge(neighborhood_plt_df,mmseqs_search[['query','vf_name','vf_id','vf_subcategory','vf_category','vfdb_species','vfdb_genus']],on='query',how='left')
 
             neighborhood_plt_df.to_csv(f"{args.out}neighborhood_results_df.tsv",sep='\t',index=False,header=True)
 
