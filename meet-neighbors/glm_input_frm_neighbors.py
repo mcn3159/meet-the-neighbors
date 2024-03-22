@@ -30,12 +30,12 @@ def get_glm_input(query,uniq_neighborhoods_d,neighborhood_res,mmseqs_clust,args)
 
     if args.from_vfdb:
         # want vf categories in the results so that downstream classification is easier
-        neighborhood_res = neighborhood_res[neighborhood_res["query"] == query][['vf_name','vf_id','vf_subcategory','vf_category']]
+        neighborhood_res = neighborhood_res[neighborhood_res["query"] == query][['vf_name','vf_id','vf_subcategory','vf_category','vfdb_species','vfdb_genus']]
         df["vf_name"],df["vf_id"],df["vf_subcategory"],df["vf_category"] = neighborhood_res.iloc[0][0],neighborhood_res.iloc[0][1],neighborhood_res.iloc[0][2],neighborhood_res.iloc[0][3]
     else:
         df["vf_name"],df["vf_id"],df["vf_subcategory"],df["vf_category"] = "non_vf","non_vf","non_vf","non_vf"
     #df_name = f"{neighborhood_res.iloc[0][1].replace(' ','_').replace(')','').replace('(','').replace('/','|')}_{str(random.randint(1,10000))}_{neighborhood_name}"
-    df_name = f"{query}!!!{df['vf_subcategory'].iloc[0].replace(' ','_')}"
+    df_name = query
     df.to_csv(f"{args.out}glm_inputs/{df_name}.tsv",sep='\t',header=False,mode="x")
 
     fasta = SeqIO.parse(f"{args.out}combined_fastas_clust_rep.fasta","fasta") 
