@@ -37,19 +37,20 @@ def read_mmseqs_tsv(**kwargs):
     #mmseqs_dask = mmseqs_dask.groupby('tset').persist()
     return mmseqs_grp_db,mmseqs
 
-# mmseq hits to a dictionary where keys are vf_centers? values are seq_id,strand,and gff where it was found
-# dictionary to dask bag, along w/ mmseqs tsv, then groupby mmseqs tsv by
 
-def get_neigborhood(mmseqs_group,dir_for_gffs,window):
+def get_neigborhood(mmseqs_group,args):
     # condition: What if the same protein appears twice in a genome, but has different neighborhoods? They should have the same query
-    gff = dir_for_gffs+'/'+mmseqs_group[1].tset.iloc[0].split('protein.faa')[0]+'genomic.gff'
+    gff = args.genomes+'/'+mmseqs_group[1].tset.iloc[0].split('protein.faa')[0]+'genomic.gff'
     gff_df = gff2pandas(gff)
-    #gff_df = from_pandas(gff_df,npartitions=partitions)
     vf_centers = gff_df[gff_df['protein_id'].isin(list(mmseqs_group[1].target))] # maybe i dont need the list command
     #print(f"{len(vf_centers)} hits found in {gff.split('/')[-1]}")
+    window = args.neighborhood_size/2
     neighborhoods = []
     for row in vf_centers.itertuples():
-        gff_df_strand = gff_df[(gff_df['strand'] == row.strand) & (gff_df['seq_id'] == row.seq_id)]
+        if args.head_on:
+            gff_df_strand = gff_df[gff_df['seq_id'] == row.seq_id]
+        else:
+            gff_df_strand = gff_df[(gff_df['strand'] == row.strand) & (gff_df['seq_id'] == row.seq_id)]
         neighborhood_df = gff_df_strand.copy()
         neighborhood_df = neighborhood_df[
             (neighborhood_df['start'] >= row.start - window) &
@@ -57,8 +58,11 @@ def get_neigborhood(mmseqs_group,dir_for_gffs,window):
         neighborhood_df['VF_center'] = row.protein_id
         neighborhood_df['gff_name'] = gff.split('/')[-1].split('_genomic.gff')[0]
 
-        if len(neighborhood_df) < 2: #filter out really small neighborhoods
-            print(f"VF Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are less than 2 proteins")
+        if len(neighborhood_df) < args.min_prots: #neighborhood centers could be near a contig break causing really small neighborhoods, which isnt helpful info
+            #print(f"VF Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are less than {min_prots} proteins") #maybe I should output this type of info to a text file
+            continue
+        if len(neighborhood_df) > args.max_prots:
+            print(f"!!! VF Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are more than {args.max_prots} proteins !!!")
             continue
         neighborhoods.append(neighborhood_df)
     return neighborhoods
