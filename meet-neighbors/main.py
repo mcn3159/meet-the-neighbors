@@ -164,7 +164,7 @@ def run(parser):
     if args.subcommand == "compute_umap":
         dirs_l = check_dirs(args.neighborhood_run,args.glm_out)
         neighborhood_dir,glm_out = dirs_l[0],dirs_l[1]
-        mmseqs_clust = dd.read_csv(f"{neighborhood_dir}clust_res_in_neighborhoods/mmseqs_clust_*.tsv")
+        mmseqs_clust = dd.read_csv(f"{neighborhood_dir}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",sep="\t")
         mmseqs_clust = mmseqs_clust.compute()
         embedding_df = cu.unpack_embeddings(glm_out,mmseqs_clust)
         umapper,embedding_df_merge = cu.get_glm_umap_df(embedding_df,mmseqs_clust)
