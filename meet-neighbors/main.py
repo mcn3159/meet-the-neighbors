@@ -7,6 +7,7 @@ import dask
 import dask.bag as db
 import dask.dataframe as dd
 import time
+import pickle as pkl
 
 
 import neighbors_frm_mmseqs as n
@@ -53,6 +54,8 @@ def get_parser():
     compute_umap = subparsers.add_parser("compute_umap",help="Compute umap from glm_outputs")
     compute_umap.add_argument("--glm_out",type=str,required=True,help="Give directory containing glm embeddings")
     compute_umap.add_argument("--neighborhood_run",type=str,required=True,help="Give directory containing neighborhoods used for glm inputs")
+    compute_umap.add_argument("--umap_obj",type=str,required=False,help="Path to umap object file")
+    compute_umap.add_argument("--embedding_df",type=str,required=False,help="Path to embedding tsv dataframe")
     compute_umap.add_argument("--umap_name",type=str,required=False,default="umap",help="Filename for umap plot")
     compute_umap.add_argument('--out','-o',type=str,default='',required=False,help="Output directory")
     compute_umap.add_argument('--label','-l',type=str,default='vf_category',required=False,help="Column label to color umap points by. Current options are vf_category,vf_name,vf_subcategory,vfdb_species,vfdb_genus,vf_id")
@@ -162,12 +165,29 @@ def run(parser):
         c.compare_uniqhits_trends(neighborhood1,neighborhood2,label1=args.name1,label2=args.name2,out=args.out,write_table=True)
 
     if args.subcommand == "compute_umap":
-        dirs_l = check_dirs(args.neighborhood_run,args.glm_out)
-        neighborhood_dir,glm_out = dirs_l[0],dirs_l[1]
+        if len(args.out) > 1:
+            dirs_l = check_dirs(args.neighborhood_run,args.glm_out,args.out)
+            neighborhood_dir,glm_out,args.out = dirs_l[0],dirs_l[1],dirs_l[2]
+        else:
+            dirs_l = check_dirs(args.neighborhood_run,args.glm_out)
+            neighborhood_dir,glm_out = dirs_l[0],dirs_l[1]
+
         mmseqs_clust = dd.read_csv(f"{neighborhood_dir}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",sep="\t")
         mmseqs_clust = mmseqs_clust.compute()
-        embedding_df = cu.unpack_embeddings(glm_out,mmseqs_clust)
-        umapper,embedding_df_merge = cu.get_glm_umap_df(embedding_df,mmseqs_clust)
+
+        umapper,embedding_df_merge = args.umap_obj,args.embedding_df
+        if (not args.umap_obj) and (not args.embedding_df):
+            embedding_df = cu.unpack_embeddings(glm_out,mmseqs_clust)
+            umapper,embedding_df_merge = cu.get_glm_umap_df(embedding_df,mmseqs_clust)
+            handle = open("umapper.obj","wb")
+            pkl.dump(umapper,handle)
+            handle.close()
+        else:
+            handle = open(args.umap_obj,"rb")
+            umapper = pkl.load(handle)
+            handle.close()
+            embedding_df_merge = pd.read_csv(args.embedding_df,sep="\t")
+            
         cu.plt_baby(umapper,embedding_df_merge,plt_name=args.umap_name,outdir=args.out,
                     legend=args.legend,width=args.width,label=args.label)
 
