@@ -81,7 +81,7 @@ def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search):
     mmseqs_search['gff_name'] = mmseqs_search.tset.str.split('_protein.faa').str[0]
     mmseqs_search['vfname_gffname'] = mmseqs_search['target'] + '!!!' + mmseqs_search['gff_name']
     mmseqs_search.drop_duplicates(subset=['vfname_gffname'],inplace=True)
-    mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','vfname_gffname','vfdb_species','vfdb_genus']],on='vfname_gffname')
+    mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','vfname_gffname',"vf_name","vf_subcategory","vf_id","vf_category",'vfdb_species','vfdb_genus']],on='vfname_gffname')
     mmseqs_clust.head()
     return mmseqs_clust
 
