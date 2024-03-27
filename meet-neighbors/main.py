@@ -168,7 +168,7 @@ def run(parser):
         mmseqs_clust = mmseqs_clust.compute()
         embedding_df = cu.unpack_embeddings(glm_out,mmseqs_clust)
         umapper,embedding_df_merge = cu.get_glm_umap_df(embedding_df,mmseqs_clust)
-        cu.plt_baby(umapper,embedding_df_merge,plt_name=args.umap_name,outdir=args.outdir,
+        cu.plt_baby(umapper,embedding_df_merge,plt_name=args.umap_name,outdir=args.out,
                     legend=args.legend,width=args.width,label=args.label)
 
     print(f"Done! Took --- %s seconds --- to complete" % (time.time() - start_time))
