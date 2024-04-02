@@ -16,23 +16,24 @@ def unpack_embeddings(glm_out_dir,mmseqs_clust):
 
     glm_res_d_vals_predf = {}
     mmseqs_clust["prot_ids"] = mmseqs_clust["locus_tag"].str.split("!!!").str[0]
-    for vf in glm_vf_fldrs:
+    for vf in glm_vf_fldrs: # this loop a lil slow but I think the clarity is really important here
         mmseqs_clust_sub = mmseqs_clust[mmseqs_clust["query"]==vf]
         batch = pkl.load(open(glm_vf_fldrs[vf]+'/results/results/batch.pkl.glm.embs.pkl','rb'))
         for i,embed in enumerate(batch):
             mmseqs_clust_sub_sub = mmseqs_clust_sub[mmseqs_clust_sub["rep"]==embed[0]].copy()
             if mmseqs_clust_sub_sub["prot_ids"].isin(mmseqs_clust_sub_sub["VF_center"]).any():
-                glm_res_d_vals_predf[vf+"!!!"+str(i)] = embed[1]
+                glm_res_d_vals_predf[vf+"!!!"+str(i)] = np.append(embed[1],embed[0]) # queries have multiple hits, adding an index to prevent key replacement when making dictionary
     embedding_df = pd.DataFrame.from_dict(glm_res_d_vals_predf,orient='index')
     embedding_df.reset_index(names="query",inplace=True)
-    embedding_df["query"] = embedding_df["query"].str.split('!!!').str[0] # don't think I need this line anymore
+    embedding_df["query"] = embedding_df["query"].str.split('!!!').str[0]
     return embedding_df
 
 def get_glm_umap_df(embedding_df,mmseqs_clust):
+    umapper = umap.UMAP().fit(embedding_df.iloc[:,1:-1].values)
+
     cols_to_add = ["query","vf_name","vf_subcategory","vf_id","vf_category","vfdb_genus","vfdb_species"]
     mmseqs_clust_for_merge = mmseqs_clust.drop_duplicates(subset=['query'])
     embedding_df_merge = pd.merge(embedding_df,mmseqs_clust_for_merge[cols_to_add],on='query')
-    umapper = umap.UMAP().fit(embedding_df.iloc[:,1:-(len(cols_to_add)-1)].values)
     assert embedding_df_merge.shape[0] == embedding_df.shape[0], "Something went wrong with the previous merge"
     return umapper,embedding_df_merge
 
