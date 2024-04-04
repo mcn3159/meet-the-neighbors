@@ -8,6 +8,7 @@ import dask.bag as db
 import dask.dataframe as dd
 import time
 import pickle as pkl
+import glob
 
 
 import neighbors_frm_mmseqs as n
@@ -31,7 +32,7 @@ def get_parser():
     extract_neighbors.add_argument("--genomes_db","-g_db", type=str, required=False, default=None, help="Path to dir containing mmseqs genomesdb with name of db. Like dir/to/path/genomesDB")
     extract_neighbors.add_argument("--test_fastas", type=str, required=False, default=None, help="Run with test fastas?")
     extract_neighbors.add_argument("--fasta_per_neighborhood", required=False, type=str, default=None, help="To get one fasta per neighborhood")
-    extract_neighbors.add_argument("--from_vfdb","-v",required=False,action="store_true",help="Indicate if search queries are solely from vfdb, to then group by their vf_name")
+    extract_neighbors.add_argument("--from_vfdb","-v",required=False,action="store_true",default=None,help="Indicate if search queries are solely from vfdb, to then group by their vf_name")
     extract_neighbors.add_argument("--min_hits","-mih",required=False,type=int,default=5,help="Minimum number of genomes required to report neighborhood")
     extract_neighbors.add_argument("--resume","-r",required=False,action="store_true",help="Resume where program Neighbors left off. Output directory must be the same")
     extract_neighbors.add_argument("--glm",required=False,action="store_true",help="Create output formatted for glm input.")
@@ -94,7 +95,7 @@ def run(parser):
         ,check=True)
             
             if (not os.path.isfile(f"{args.out}combined_fastas_clust_res.tsv") and args.resume) or (not args.resume):
-                mmseqs_grp_db,mmseqs_search = n.read_mmseqs_tsv(vfdb=args.from_vfdb,input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
+                mmseqs_grp_db,mmseqs_search = n.read_search_tsv(vfdb=args.from_vfdb,input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
                 neighborhood_db = db.map(n.get_neigborhood,mmseqs_grp_db,args)
                 neighborhood_db = neighborhood_db.flatten()
                 n.run_fasta_from_neighborhood(dir_for_fasta=args.genomes,neighborhood=neighborhood_db,
@@ -105,23 +106,26 @@ def run(parser):
                 subprocess.run(f"mmseqs createtsv {args.out}combined_fastas_db {args.out}combined_fastas_db {args.out}combined_fastas_clust {args.out}combined_fastas_clust_res.tsv"
         ,shell=True,check=True)
                 
-            elif os.path.isfile(f"{args.out}combined_fastas_clust_res.tsv") and args.resume:
-                mmseqs_grp_db,mmseqs_search = n.read_mmseqs_tsv(vfdb=args.from_vfdb,input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
-            mmseqs_search = dd.from_pandas(mmseqs_search,npartitions=args.threads) # make it a dask dataframe there instad of in read_mmseqs_tsv() b/c its much easier to run
-            mmseqs_clust = pn.prep_mmseqs_tsv(f"{args.out}combined_fastas_clust_res.tsv")
-            if args.red_olp:
-                mmseqs_groups = list(mmseqs_clust.groupby(['gff', 'strand', 'seq_id'])) #cant groupby on its own with dask
-                mmseqs_groups = db.from_sequence(mmseqs_groups,npartitions=args.threads)
-                mmseqs_clust = db.map(pn.reduce_overlap,mmseqs_groups,window=10000)
-                mmseqs_clust = pd.concat(mmseqs_clust.compute())
-            print(f"!!! Clustering df size after removing overlapping neighborhoods: {mmseqs_clust.shape} !!!")
-            mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search)
-            cluster_neighborhoods_by = "query"
+            if (len(glob.glob(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv"))==0 and args.resume) or (not args.resume):
+                mmseqs_grp_db,mmseqs_search = n.read_search_tsv(vfdb=args.from_vfdb,input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
+                mmseqs_search = dd.from_pandas(mmseqs_search,npartitions=args.threads) # make it a dask dataframe there instad of in read_search_tsv() b/c its much easier to run
+                mmseqs_clust = pn.prep_cluster_tsv(f"{args.out}combined_fastas_clust_res.tsv")
+                if args.red_olp:
+                    mmseqs_groups = list(mmseqs_clust.groupby(['gff', 'strand', 'seq_id'])) #cant groupby on its own with dask
+                    mmseqs_groups = db.from_sequence(mmseqs_groups,npartitions=args.threads)
+                    mmseqs_clust = db.map(pn.reduce_overlap,mmseqs_groups,window=10000)
+                    mmseqs_clust = pd.concat(mmseqs_clust.compute())
+                print(f"!!! Clustering df size after removing overlapping neighborhoods: {mmseqs_clust.shape} !!!")
+                mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search,args.from_vfdb)
+                cluster_neighborhoods_by = "query"
+                
+                subprocess.run(f"mkdir {args.out}clust_res_in_neighborhoods",shell=True,check=True)
+                mmseqs_clust.to_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",index=False,sep="\t")
+                mmseqs_clust = mmseqs_clust.compute()
             
-            subprocess.run(f"mkdir {args.out}clust_res_in_neighborhoods",shell=True,check=True)
-            mmseqs_clust.to_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",index=False,sep="\t")
-            mmseqs_clust = mmseqs_clust.compute()
-
+            elif len(glob.glob(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv"))>0 and args.resume:
+                mmseqs_clust = dd.read_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",sep="\t")
+                mmseqs_clust = mmseqs_clust.compute() #reading with dask then computing is usually faster than read w/ pandas
             warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
             class_objs = {vf:pn.VF_neighborhoods(cdhit_sub_vf=mmseqs_clust[mmseqs_clust[cluster_neighborhoods_by]==vf],dbscan_eps=0.15,dbscan_min=3)
                         for vf in set(mmseqs_clust[cluster_neighborhoods_by])}
@@ -131,9 +135,8 @@ def run(parser):
             
             if args.from_vfdb:
                 # add vf info to neighborhood queries for glm embed color coding and other plotting
-                mmseqs_search = mmseqs_search.compute()
-                mmseqs_search.drop_duplicates(subset=["query"],inplace=True)
-                neighborhood_plt_df = pd.merge(neighborhood_plt_df,mmseqs_search[['query','vf_name','vf_id','vf_subcategory','vf_category']],on='query',how='left')
+                mmseqs_clust_formerge = mmseqs_clust.drop_duplicates(subset=["query"])
+                neighborhood_plt_df = pd.merge(neighborhood_plt_df,mmseqs_clust_formerge[['query','vf_name','vf_id','vf_subcategory','vf_category','vfdb_species','vfdb_genus']],on='query',how='left')
 
             neighborhood_plt_df.to_csv(f"{args.out}neighborhood_results_df.tsv",sep='\t',index=False,header=True)
 

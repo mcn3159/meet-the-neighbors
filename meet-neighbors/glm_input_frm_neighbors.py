@@ -17,9 +17,10 @@ def get_glm_input(query,uniq_neighborhoods_d,neighborhood_res,mmseqs_clust,args)
 
     neighborhood_name_prots = {}
     for neighborhood_name in set(mmseqs_clust.neighborhood_name):
-        mmseqs_clust_sub = mmseqs_clust[mmseqs_clust['neighborhood_name'] == neighborhood_name]
+        mmseqs_clust_sub = mmseqs_clust[mmseqs_clust['neighborhood_name'] == neighborhood_name].copy()
         # print("Size of mmseq_clust after filter by neighborhood_grp",len(mmseqs_clust_sub))
         mmseqs_clust_sub.sort_values(by='start',inplace=True)
+        mmseqs_clust_sub.drop_duplicates(subset=['start'],inplace=True) # in case something duplicate rows were made w/ earlier mmseqs merge
         
         # assert int(mmseqs_clust_sub.start.iloc[-1]) -  int(mmseqs_clust_sub.start.iloc[0]) < args.neighborhood_size + 30000 # want to make sure that everything is working right, so if neighborhoods are much larger than expected, someting's wrong
         

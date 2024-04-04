@@ -51,7 +51,7 @@ class VF_neighborhoods:
             "entropy" : self.entropy
         }
 
-def prep_mmseqs_tsv(mmseqs_res_dir):
+def prep_cluster_tsv(mmseqs_res_dir):
     #run for mmseqs clustered results
     #example res: '/Users/mn3159/bigpurple/data/pirontilab/Students/Madu/bigdreams_dl/neighborhood_call/neighbors_rand5k/neighbors_rand5k_clust_res.tsv'
     mmseqs = dd.read_csv(mmseqs_res_dir,sep='\t',names=['rep','locus_tag'])
@@ -63,7 +63,7 @@ def prep_mmseqs_tsv(mmseqs_res_dir):
                                                                                mmseqs['locus_tag'].str.split('!!!').str[4],\
                                                                                mmseqs['locus_tag'].str.split('!!!').str[5],\
                                                                                mmseqs['locus_tag'].str.split('!!!').str[6]
-    mmseqs['neighborhood_name'] = mmseqs['VF_center'] + '!!!' + mmseqs['gff'] + '!!!' + mmseqs['seq_id'] + '!!!' + mmseqs['locus_range']
+    mmseqs['neighborhood_name'] = mmseqs['VF_center'] + '!!!' + mmseqs['gff'] + '!!!' + mmseqs['seq_id'] + '!!!' + mmseqs['locus_range'] #VF_center in non_vf calls are simply just the query hits
     
     mmseqs = mmseqs.compute()
     cluster_names = {rep:f"Cluster_{i}" for i,rep in enumerate(set(list(mmseqs.rep)))} #can't list and loop mmseqs col with dask, so I have to compute first
@@ -74,14 +74,17 @@ def prep_mmseqs_tsv(mmseqs_res_dir):
     #mmseqs.head()
     return mmseqs
 
-def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search):
+def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb):
     # map query search hits to each target neighborhood in the cluster df
     # what if the same protein fasta has multiple proteins with the same name
     prepped_mmseqs_clust['vfname_gffname'] = prepped_mmseqs_clust['VF_center'] + '!!!' + prepped_mmseqs_clust['gff']
     mmseqs_search['gff_name'] = mmseqs_search.tset.str.split('_protein.faa').str[0]
     mmseqs_search['vfname_gffname'] = mmseqs_search['target'] + '!!!' + mmseqs_search['gff_name']
-    mmseqs_search.drop_duplicates(subset=['vfname_gffname'],inplace=True)
-    mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','vfname_gffname',"vf_name","vf_subcategory","vf_id","vf_category",'vfdb_species','vfdb_genus']],on='vfname_gffname')
+    mmseqs_search.drop_duplicates(subset=['vfname_gffname'],inplace=True) # to reduce mmseqs_clust shape explosion
+    if vfdb:
+        mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','vfname_gffname',"vf_name","vf_subcategory","vf_id","vf_category",'vfdb_species','vfdb_genus']],on='vfname_gffname')
+    else:
+        mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','vfname_gffname']],on='vfname_gffname')
     mmseqs_clust.head()
     return mmseqs_clust
 

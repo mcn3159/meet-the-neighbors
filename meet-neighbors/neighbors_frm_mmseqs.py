@@ -8,7 +8,7 @@ import _pickle as cPickle
 from process_gffs import gff2pandas
 from process_gffs import get_protseq_frmFasta
 
-def read_mmseqs_tsv(**kwargs):
+def read_search_tsv(**kwargs):
     #read in mmseqs_tsv
     #create vf info col
     #send to dask df
@@ -31,7 +31,7 @@ def read_mmseqs_tsv(**kwargs):
         mmseqs['vfdb_species'] = mmseqs['qheader'].str.extract(pattern)
         mmseqs['vfdb_genus'] = mmseqs.vfdb_species.str.split(' ').str[0]
 
-    mmseqs.to_csv(mmseqs_search_res,index=False,header=True,sep='\t')
+    #mmseqs.to_csv(mmseqs_search_res,index=False,header=True,sep='\t')
     mmseqs_grp = mmseqs.groupby('tset') # grouped vf hits by fasta where hits were found
     mmseqs_l = list(mmseqs_grp) #turning it into a list so I can send it to a dask bag
     #turning into list b/c dask_df_apply(func) is a literal pain in the ass to use
