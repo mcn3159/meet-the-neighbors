@@ -8,6 +8,7 @@ import dask.bag as db
 import dask.dataframe as dd
 import time
 import pickle as pkl
+import glob
 
 
 import neighbors_frm_mmseqs as n
@@ -105,23 +106,26 @@ def run(parser):
                 subprocess.run(f"mmseqs createtsv {args.out}combined_fastas_db {args.out}combined_fastas_db {args.out}combined_fastas_clust {args.out}combined_fastas_clust_res.tsv"
         ,shell=True,check=True)
                 
-            elif os.path.isfile(f"{args.out}combined_fastas_clust_res.tsv") and args.resume:
+            if (len(glob.glob(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv"))==0 and args.resume) or (not args.resume):
                 mmseqs_grp_db,mmseqs_search = n.read_search_tsv(vfdb=args.from_vfdb,input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
-            mmseqs_search = dd.from_pandas(mmseqs_search,npartitions=args.threads) # make it a dask dataframe there instad of in read_search_tsv() b/c its much easier to run
-            mmseqs_clust = pn.prep_cluster_tsv(f"{args.out}combined_fastas_clust_res.tsv")
-            if args.red_olp:
-                mmseqs_groups = list(mmseqs_clust.groupby(['gff', 'strand', 'seq_id'])) #cant groupby on its own with dask
-                mmseqs_groups = db.from_sequence(mmseqs_groups,npartitions=args.threads)
-                mmseqs_clust = db.map(pn.reduce_overlap,mmseqs_groups,window=10000)
-                mmseqs_clust = pd.concat(mmseqs_clust.compute())
-            print(f"!!! Clustering df size after removing overlapping neighborhoods: {mmseqs_clust.shape} !!!")
-            mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search,args.from_vfdb)
-            cluster_neighborhoods_by = "query"
+                mmseqs_search = dd.from_pandas(mmseqs_search,npartitions=args.threads) # make it a dask dataframe there instad of in read_search_tsv() b/c its much easier to run
+                mmseqs_clust = pn.prep_cluster_tsv(f"{args.out}combined_fastas_clust_res.tsv")
+                if args.red_olp:
+                    mmseqs_groups = list(mmseqs_clust.groupby(['gff', 'strand', 'seq_id'])) #cant groupby on its own with dask
+                    mmseqs_groups = db.from_sequence(mmseqs_groups,npartitions=args.threads)
+                    mmseqs_clust = db.map(pn.reduce_overlap,mmseqs_groups,window=10000)
+                    mmseqs_clust = pd.concat(mmseqs_clust.compute())
+                print(f"!!! Clustering df size after removing overlapping neighborhoods: {mmseqs_clust.shape} !!!")
+                mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search,args.from_vfdb)
+                cluster_neighborhoods_by = "query"
+                
+                subprocess.run(f"mkdir {args.out}clust_res_in_neighborhoods",shell=True,check=True)
+                mmseqs_clust.to_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",index=False,sep="\t")
+                mmseqs_clust = mmseqs_clust.compute()
             
-            subprocess.run(f"mkdir {args.out}clust_res_in_neighborhoods",shell=True,check=True)
-            mmseqs_clust.to_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",index=False,sep="\t")
-            mmseqs_clust = mmseqs_clust.compute()
-
+            elif len(glob.glob(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv"))>0 and args.resume:
+                mmseqs_clust = dd.read_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",sep="\t")
+                mmseqs_clust = mmseqs_clust.compute() #reading with dask then computing is usually faster than read w/ pandas
             warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
             class_objs = {vf:pn.VF_neighborhoods(cdhit_sub_vf=mmseqs_clust[mmseqs_clust[cluster_neighborhoods_by]==vf],dbscan_eps=0.15,dbscan_min=3)
                         for vf in set(mmseqs_clust[cluster_neighborhoods_by])}

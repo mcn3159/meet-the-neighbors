@@ -19,7 +19,7 @@ def unpack_embeddings(glm_out_dir,mmseqs_clust):
     for vf in glm_vf_fldrs: # this loop a lil slow but I think the clarity is really important here
         mmseqs_clust_sub = mmseqs_clust[mmseqs_clust["query"]==vf]
         batch = pkl.load(open(glm_vf_fldrs[vf]+'/results/results/batch.pkl.glm.embs.pkl','rb'))
-        for i,embed in enumerate(batch):
+        for i,embed in enumerate(batch): #which one of the proteins in the representative cluster has a protein id that is the same as a VF_center
             mmseqs_clust_sub_sub = mmseqs_clust_sub[mmseqs_clust_sub["rep"]==embed[0]].copy()
             if mmseqs_clust_sub_sub["prot_ids"].isin(mmseqs_clust_sub_sub["VF_center"]).any():
                 glm_res_d_vals_predf[vf+"!!!"+str(i)] = np.append(embed[1],embed[0]) # queries have multiple hits, adding an index to prevent key replacement when making dictionary
