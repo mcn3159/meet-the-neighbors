@@ -117,7 +117,6 @@ def run(parser):
                     mmseqs_clust = pd.concat(mmseqs_clust.compute())
                 print(f"!!! Clustering df size after removing overlapping neighborhoods: {mmseqs_clust.shape} !!!")
                 mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search,args.from_vfdb)
-                cluster_neighborhoods_by = "query"
                 
                 subprocess.run(f"mkdir {args.out}clust_res_in_neighborhoods",shell=True,check=True)
                 mmseqs_clust.to_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",index=False,sep="\t")
@@ -127,6 +126,7 @@ def run(parser):
                 mmseqs_clust = dd.read_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",sep="\t")
                 mmseqs_clust = mmseqs_clust.compute() #reading with dask then computing is usually faster than read w/ pandas
             warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
+            cluster_neighborhoods_by = "query"
             class_objs = {vf:pn.VF_neighborhoods(cdhit_sub_vf=mmseqs_clust[mmseqs_clust[cluster_neighborhoods_by]==vf],dbscan_eps=0.15,dbscan_min=3)
                         for vf in set(mmseqs_clust[cluster_neighborhoods_by])}
             neighborhood_plt_df = pd.DataFrame.from_dict([class_objs[n].to_dict() for n in class_objs])
@@ -143,9 +143,8 @@ def run(parser):
             if args.glm:
                 glm_input_out = f"glm_inputs/"
                 subprocess.run(f"mkdir {args.out}{glm_input_out}",shell=True,check=True) #should return an error if the path already exists, don't want to make duplicates
-                if not os.path.isfile(f"{args.out}combined_fastas_clust_rep.fasta"):
-                    subprocess.run(f"mmseqs createsubdb {args.out}combined_fastas_clust {args.out}combined_fastas_db {args.out}combined_fastas_clust_rep",shell=True,check=True)
-                    subprocess.run(f"mmseqs convert2fasta {args.out}combined_fastas_clust_rep {args.out}combined_fastas_clust_rep.fasta",shell=True,check=True)
+                subprocess.run(f"mmseqs createsubdb {args.out}combined_fastas_clust {args.out}combined_fastas_db {args.out}combined_fastas_clust_rep",shell=True,check=True)
+                subprocess.run(f"mmseqs convert2fasta {args.out}combined_fastas_clust_rep {args.out}combined_fastas_clust_rep.fasta",shell=True,check=True)
                 print("!!!Grabbing glm inputs!!!")
 
                 uniq_neighborhoods_d = {query:class_objs[query].get_neighborhood_names(args.glm_threshold) for query in class_objs}
