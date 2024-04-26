@@ -143,7 +143,7 @@ def run(parser):
                     mmseqs_clust = db.map(pn.reduce_overlap,mmseqs_groups,window=10000)
                     mmseqs_clust = pd.concat(mmseqs_clust.compute())
                     logger.debug(f"Clustering df size after removing overlapping neighborhoods: {mmseqs_clust.shape}")
-                mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search,args.from_vfdb)
+                mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search,args.from_vfdb,logger)
                 
                 subprocess.run(f"mkdir {args.out}clust_res_in_neighborhoods",shell=True,check=True)
                 mmseqs_clust.to_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",index=False,sep="\t")
