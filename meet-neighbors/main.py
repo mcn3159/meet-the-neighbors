@@ -9,6 +9,8 @@ import dask.dataframe as dd
 import time
 import pickle as pkl
 import glob
+import logging
+import sys
 
 
 import neighbors_frm_mmseqs as n
@@ -67,9 +69,26 @@ def get_parser():
 def check_dirs(*args):
     return [dir if dir[-1]=="/" else dir+"/" for dir in args]
 
+def get_logger(subcommand,out):
+    #logger = logging.basicConfig(filename='log.txt', filemode='w',format='%(asctime)s - %(message)s')
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.DEBUG)
+    c_handler,f_handler = logging.StreamHandler(),logging.FileHandler(f"{out}{subcommand}.log")
+    f_handler.setLevel(logging.DEBUG)
+    c_handler.setLevel(logging.INFO)
+    f_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    f_handler.setFormatter(f_format)
+    logger.addHandler(f_handler)
+    logger.addHandler(c_handler)
+    exec_command = f"{' '.join(sys.argv)}"
+    logger.debug("Organizing neighborhood meetup...")
+    logger.debug(f"the command launched: {exec_command}")
+    return logger
+
 def run(parser):
     start_time = time.time()
     args = parser.parse_args()
+    
     if args.subcommand == "extract_neighbors":
         assert os.path.isdir(args.out), "Output directory not found"
         dirs_l = check_dirs(args.genomes,args.out)
@@ -79,29 +98,36 @@ def run(parser):
             genomes_db = args.genomes_db
         else:
             genomes_db = f"{args.out}genomesDB"
+        logger = get_logger(args.subcommand,args.out)
+        logger.debug("Extracting neighborhoods...")
 
         if not args.plt_from_saved:
             if not args.genomes_db:
                 if (not os.path.isfile(genomes_db) and args.resume) or (not args.resume):
-                    subprocess.run(f"mmseqs createdb {faa_dir} {genomes_db}",shell=True,check=True)
-
+                    logger.debug("Creating genome database with mmesqs...")
+                    subprocess.run(f"mmseqs createdb {faa_dir} {genomes_db} -v 2",shell=True,check=True)
+                    
             if (not os.path.isfile(f"{args.out}queryDB") and args.resume) or (not args.resume):
-                subprocess.run(["mmseqs","createdb",args.query_fasta,f"{args.out}queryDB"],check=True)
+                logger.debug("Creating query database with mmesqs...")
+                subprocess.run(["mmseqs","createdb",args.query_fasta,f"{args.out}queryDB","-v","2"],check=True)
 
             if (not os.path.isfile(f"{args.out}vfs_in_genomes.tsv") and args.resume) or (not args.resume):
-                subprocess.run(f"mmseqs search {args.out}queryDB {genomes_db} {args.out}vfs_in_genomes {args.out}tmp_search --min-seq-id {args.seq_id} --cov-mode 0 -c {args.cov} --split-memory-limit {int(args.mem * (2/3))}G --threads {args.threads} --start-sens 1 --sens-steps 3 -s 7"
+                logger.debug("Searching for queries in genome database with mmesqs...")
+                subprocess.run(f"mmseqs search {args.out}queryDB {genomes_db} {args.out}vfs_in_genomes {args.out}tmp_search --min-seq-id {args.seq_id} --cov-mode 0 -c {args.cov} -v 2 --split-memory-limit {int(args.mem * (2/3))}G --threads {args.threads} --start-sens 1 --sens-steps 3 -s 7"
         ,shell=True,check=True)
                 subprocess.run(["mmseqs", "convertalis", f"{args.out}queryDB", f"{genomes_db}", f"{args.out}vfs_in_genomes", f"{args.out}vfs_in_genomes.tsv", "--format-output", "query,target,evalue,pident,qcov,fident,alnlen,qheader,theader,tset,tsetid"] 
         ,check=True)
             
             if (not os.path.isfile(f"{args.out}combined_fastas_clust_res.tsv") and args.resume) or (not args.resume):
+                logger.debug("Pulling neighborhoods...")
                 mmseqs_grp_db,mmseqs_search = n.read_search_tsv(vfdb=args.from_vfdb,input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
-                neighborhood_db = db.map(n.get_neigborhood,mmseqs_grp_db,args)
+                neighborhood_db = db.map(n.get_neigborhood,mmseqs_grp_db,logger,args)
                 neighborhood_db = neighborhood_db.flatten()
-                n.run_fasta_from_neighborhood(dir_for_fasta=args.genomes,neighborhood=neighborhood_db,
+                n.run_fasta_from_neighborhood(logger,dir_for_fasta=args.genomes,neighborhood=neighborhood_db,
                                             fasta_per_uniq_neighborhood=args.fasta_per_neighborhood,out_folder=args.out,test=args.test_fastas,threads=args.threads)
-                subprocess.run(f"mmseqs createdb {args.out}combined_fasta_partition* {args.out}combined_fastas_db",shell=True,check=True)
-                subprocess.run(f"mmseqs linclust {args.out}combined_fastas_db {args.out}combined_fastas_clust --cov-mode 0 -c {args.cov} --min-seq-id {args.seq_id} --similarity-type 2 --split-memory-limit {int(args.mem * (2/3))}G --threads {args.threads} {args.out}tmp_clust",
+                logger.debug("Clustering proteins found in all neighborhoods...")
+                subprocess.run(f"mmseqs createdb {args.out}combined_fasta_partition* {args.out}combined_fastas_db -v 2",shell=True,check=True)
+                subprocess.run(f"mmseqs linclust {args.out}combined_fastas_db {args.out}combined_fastas_clust --cov-mode 0 -c {args.cov} --min-seq-id {args.seq_id} --similarity-type 2 -v 2 --split-memory-limit {int(args.mem * (2/3))}G --threads {args.threads} {args.out}tmp_clust",
                                 shell=True,check=True)
                 subprocess.run(f"mmseqs createtsv {args.out}combined_fastas_db {args.out}combined_fastas_db {args.out}combined_fastas_clust {args.out}combined_fastas_clust_res.tsv"
         ,shell=True,check=True)
@@ -109,13 +135,14 @@ def run(parser):
             if (len(glob.glob(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv"))==0 and args.resume) or (not args.resume):
                 mmseqs_grp_db,mmseqs_search = n.read_search_tsv(vfdb=args.from_vfdb,input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
                 mmseqs_search = dd.from_pandas(mmseqs_search,npartitions=args.threads) # make it a dask dataframe there instad of in read_search_tsv() b/c its much easier to run
-                mmseqs_clust = pn.prep_cluster_tsv(f"{args.out}combined_fastas_clust_res.tsv")
+                logger.debug("Reading in dataframe of clustered proteins from neighborhoods...")
+                mmseqs_clust = pn.prep_cluster_tsv(f"{args.out}combined_fastas_clust_res.tsv",logger)
                 if args.red_olp:
                     mmseqs_groups = list(mmseqs_clust.groupby(['gff', 'strand', 'seq_id'])) #cant groupby on its own with dask
                     mmseqs_groups = db.from_sequence(mmseqs_groups,npartitions=args.threads)
                     mmseqs_clust = db.map(pn.reduce_overlap,mmseqs_groups,window=10000)
                     mmseqs_clust = pd.concat(mmseqs_clust.compute())
-                print(f"!!! Clustering df size after removing overlapping neighborhoods: {mmseqs_clust.shape} !!!")
+                    logger.debug(f"Clustering df size after removing overlapping neighborhoods: {mmseqs_clust.shape}")
                 mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search,args.from_vfdb)
                 
                 subprocess.run(f"mkdir {args.out}clust_res_in_neighborhoods",shell=True,check=True)
@@ -125,6 +152,7 @@ def run(parser):
             elif len(glob.glob(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv"))>0 and args.resume:
                 mmseqs_clust = dd.read_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",sep="\t")
                 mmseqs_clust = mmseqs_clust.compute() #reading with dask then computing is usually faster than read w/ pandas
+            logger.debug("Creating neighborhood objects...")
             warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
             cluster_neighborhoods_by = "query"
             class_objs = {vf:pn.VF_neighborhoods(cdhit_sub_vf=mmseqs_clust[mmseqs_clust[cluster_neighborhoods_by]==vf],dbscan_eps=0.15,dbscan_min=3)
@@ -143,12 +171,12 @@ def run(parser):
             if args.glm:
                 glm_input_out = f"glm_inputs/"
                 subprocess.run(f"mkdir {args.out}{glm_input_out}",shell=True,check=True) #should return an error if the path already exists, don't want to make duplicates
+                logger.debug("Grabbing cluster representatives...")
                 subprocess.run(f"mmseqs createsubdb {args.out}combined_fastas_clust {args.out}combined_fastas_db {args.out}combined_fastas_clust_rep",shell=True,check=True)
                 subprocess.run(f"mmseqs convert2fasta {args.out}combined_fastas_clust_rep {args.out}combined_fastas_clust_rep.fasta",shell=True,check=True)
-                print("!!!Grabbing glm inputs!!!")
 
-                uniq_neighborhoods_d = {query:class_objs[query].get_neighborhood_names(args.glm_threshold) for query in class_objs}
-    
+                uniq_neighborhoods_d = {query:class_objs[query].get_neighborhood_names(args.glm_threshold,logger) for query in class_objs}
+                logger.debug("Grabbing tsvs for glm input...")
                 db.map(glm.get_glm_input,query=db.from_sequence(uniq_neighborhoods_d.keys(),npartitions=args.threads),
                        uniq_neighborhoods_d=uniq_neighborhoods_d,neighborhood_res=neighborhood_plt_df,mmseqs_clust=mmseqs_clust,args=args).persist()
         elif args.plt_from_saved:
@@ -160,6 +188,8 @@ def run(parser):
             pn.plt_box_entropy(neighborhood_plt_df,out=args.out,vfdb=args.from_vfdb)
     
     if args.subcommand == "compare_neighborhoods":
+        logger = get_logger(args.subcommand,args.out)
+        logger.debug("Comparing neighbors...")
         dirs_l = check_dirs(args.out)
         args.out = dirs_l[0]
         neighborhood1,neighborhood2 = pd.read_csv(args.neighborhood1,sep='\t'),pd.read_csv(args.neighborhood2,sep='\t')
@@ -167,6 +197,8 @@ def run(parser):
         c.compare_uniqhits_trends(neighborhood1,neighborhood2,label1=args.name1,label2=args.name2,out=args.out,write_table=True)
 
     if args.subcommand == "compute_umap":
+        logger = get_logger(args.subcommand,args.out)
+        logger.debug("Computing umap from gLM...")
         if len(args.out) > 1:
             dirs_l = check_dirs(args.neighborhood_run,args.glm_out,args.out)
             neighborhood_dir,glm_out,args.out = dirs_l[0],dirs_l[1],dirs_l[2]
@@ -193,7 +225,7 @@ def run(parser):
         cu.plt_baby(umapper,embedding_df_merge,plt_name=args.umap_name,outdir=args.out,
                     legend=args.legend,width=args.width,label=args.label)
 
-    print(f"Done! Took --- %s seconds --- to complete" % (time.time() - start_time))
+    logger.debug(f"Done! Took --- %s seconds --- to complete" % (time.time() - start_time))
     return
 
 if __name__ == "__main__":

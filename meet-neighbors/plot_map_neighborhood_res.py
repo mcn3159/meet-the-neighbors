@@ -31,11 +31,12 @@ class VF_neighborhoods:
         unique_neighborhoods = self.cdhit_sub_piv.groupby(self.cdhit_sub_piv.columns.to_list(),as_index=False).size() # https://stackoverflow.com/questions/35584085/how-to-count-duplicate-rows-in-pandas-dataframe
         return entropy(unique_neighborhoods['size'].to_numpy())
     
-    def get_neighborhood_names(self,threshold):
+    def get_neighborhood_names(self,threshold,logger):
         dist_matrix,unique_hits = self.create_dist_matrix()
         lower_diag = np.tril(dist_matrix,k=-1) # grabs the lower half diagonal of distance matrix
         indices_to_remove = np.unique((lower_diag > threshold).nonzero()[0]) # get indices of lower half that contain values above threshold
         cdhit_sub_piv_sub = self.cdhit_sub_piv.drop(self.cdhit_sub_piv.iloc[list(indices_to_remove)].index) #remove those indices from dataframe
+        logger.info(f"Number of neighborhoods for {self.VF_center} started at: {len(self.cdhit_sub_piv)} ... removed {len(self.cdhit_sub_piv)-len(self.cdhit_sub_piv_sub)} similar neighborhoods")
         return list(cdhit_sub_piv_sub.index)
 
     def to_dict(self):
@@ -51,7 +52,7 @@ class VF_neighborhoods:
             "entropy" : self.entropy
         }
 
-def prep_cluster_tsv(mmseqs_res_dir):
+def prep_cluster_tsv(mmseqs_res_dir,logger):
     #run for mmseqs clustered results
     #example res: '/Users/mn3159/bigpurple/data/pirontilab/Students/Madu/bigdreams_dl/neighborhood_call/neighbors_rand5k/neighbors_rand5k_clust_res.tsv'
     mmseqs = dd.read_csv(mmseqs_res_dir,sep='\t',names=['rep','locus_tag'])
@@ -69,12 +70,10 @@ def prep_cluster_tsv(mmseqs_res_dir):
     cluster_names = {rep:f"Cluster_{i}" for i,rep in enumerate(set(list(mmseqs.rep)))} #can't list and loop mmseqs col with dask, so I have to compute first
     mmseqs['cluster'] = mmseqs['rep'].map(cluster_names)
 
-    print(f"Size of mmseqs cluster results: {mmseqs.shape}")
-    
-    #mmseqs.head()
+    logger.info(f"Size of mmseqs cluster results: {mmseqs.shape}")
     return mmseqs
 
-def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb):
+def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb,logger):
     # map query search hits to each target neighborhood in the cluster df
     # what if the same protein fasta has multiple proteins with the same name
     prepped_mmseqs_clust['vfname_gffname'] = prepped_mmseqs_clust['VF_center'] + '!!!' + prepped_mmseqs_clust['gff']
@@ -85,7 +84,8 @@ def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb):
         mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','vfname_gffname',"vf_name","vf_subcategory","vf_id","vf_category",'vfdb_species','vfdb_genus']],on='vfname_gffname')
     else:
         mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','vfname_gffname']],on='vfname_gffname')
-    mmseqs_clust.head()
+    logger.info(f"Size of mmseqs cluster results after merge with search results: {mmseqs_clust.shape}")
+    logger.info(f"Head of merge results: {mmseqs_clust.head()}")
     return mmseqs_clust
 
 def reduce_overlap(mmseqs_clust_sub,window):
