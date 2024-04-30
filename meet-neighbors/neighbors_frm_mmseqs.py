@@ -8,7 +8,7 @@ import _pickle as cPickle
 from process_gffs import gff2pandas
 from process_gffs import get_protseq_frmFasta
 
-def read_mmseqs_tsv(**kwargs):
+def read_search_tsv(**kwargs):
     #read in mmseqs_tsv
     #create vf info col
     #send to dask df
@@ -20,25 +20,27 @@ def read_mmseqs_tsv(**kwargs):
     partitions = kwargs.get("threads",4)
     mmseqs = dask.dataframe.read_csv(mmseqs_search_res,sep='\t')
     mmseqs = mmseqs.compute()
-    if (mmseqs.columns[-1] != 'tsetid') and (mmseqs.columns[-1] != 'vf_category'): mmseqs.columns = headers
+    if (mmseqs.columns[-1] != 'tsetid') and (mmseqs.columns[-1] != 'vfdb_genus'): mmseqs.columns = headers
     if vfdb:
         #extract vf annots from columns
         pattern = r"(\) .* \[)([^\]]+)\s*\(([^)]+)\)\s*-\s*([^\]]+)\(" #use https://regex101.com/ to see what pattern is doing
         mmseqs[['vf_name','vf_subcategory','vf_id','vf_category']] = mmseqs['qheader'].str.extract(pattern)
         pattern = r"\) (.+?) \["
         mmseqs['vf_name'] = mmseqs.vf_name.str.extract(pattern)
+        pattern = r"\[[^\]]+\]\s*\[([^\]]+)\]"
+        mmseqs['vfdb_species'] = mmseqs['qheader'].str.extract(pattern)
+        mmseqs['vfdb_genus'] = mmseqs.vfdb_species.str.split(' ').str[0]
 
-    mmseqs.to_csv(mmseqs_search_res,index=False,header=True,sep='\t')
+    #mmseqs.to_csv(mmseqs_search_res,index=False,header=True,sep='\t')
     mmseqs_grp = mmseqs.groupby('tset') # grouped vf hits by fasta where hits were found
     mmseqs_l = list(mmseqs_grp) #turning it into a list so I can send it to a dask bag
     #turning into list b/c dask_df_apply(func) is a literal pain in the ass to use
     mmseqs_grp_db = db.from_sequence(mmseqs_l,npartitions=partitions)
-    print(f'!!!{partitions} threads detected!!!')
     #mmseqs_dask = mmseqs_dask.groupby('tset').persist()
     return mmseqs_grp_db,mmseqs
 
 
-def get_neigborhood(mmseqs_group,args):
+def get_neigborhood(mmseqs_group,logger,args):
     # condition: What if the same protein appears twice in a genome, but has different neighborhoods? They should have the same query
     gff = args.genomes+'/'+mmseqs_group[1].tset.iloc[0].split('protein.faa')[0]+'genomic.gff'
     gff_df = gff2pandas(gff)
@@ -46,6 +48,8 @@ def get_neigborhood(mmseqs_group,args):
     #print(f"{len(vf_centers)} hits found in {gff.split('/')[-1]}")
     window = args.neighborhood_size/2
     neighborhoods = []
+    max_neighbors_report = 2
+    report = 0
     for row in vf_centers.itertuples():
         if args.head_on:
             gff_df_strand = gff_df[gff_df['seq_id'] == row.seq_id]
@@ -59,15 +63,19 @@ def get_neigborhood(mmseqs_group,args):
         neighborhood_df['gff_name'] = gff.split('/')[-1].split('_genomic.gff')[0]
 
         if len(neighborhood_df) < args.min_prots: #neighborhood centers could be near a contig break causing really small neighborhoods, which isnt helpful info
-            #print(f"VF Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are less than {min_prots} proteins") #maybe I should output this type of info to a text file
+            if report < max_neighbors_report:
+                logger.warning(f"VF Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are less than {args.min_prots} proteins") #maybe I should output this type of info to a text file
+                report +=1
             continue
         if len(neighborhood_df) > args.max_prots:
-            print(f"!!! VF Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are more than {args.max_prots} proteins !!!")
+            if report < max_neighbors_report:
+                logger.warning(f"!!! VF Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are more than {args.max_prots} proteins !!!")
+                report +=1
             continue
         neighborhoods.append(neighborhood_df)
     return neighborhoods
 
-def run_fasta_from_neighborhood(dir_for_fasta,neighborhood,**kwargs):
+def run_fasta_from_neighborhood(logger,dir_for_fasta,neighborhood,**kwargs):
     # Create protein fasta from neighborhoods
     #modify this func to output fastas in a separate directory
     test = kwargs.get("test",None)
@@ -81,9 +89,8 @@ def run_fasta_from_neighborhood(dir_for_fasta,neighborhood,**kwargs):
         print("!!!Neighborhoods loaded from pickle!!!")
         neighborhood = db.from_sequence(neighborhood,npartitions=partitions)
 
-    seq_recs = db.map(get_protseq_frmFasta,dir_for_fasta,neighborhood,fasta_per_neighborhood=fasta_per_neighborhood)
+    seq_recs = db.map(get_protseq_frmFasta,logger,dir_for_fasta,neighborhood,fasta_per_neighborhood=fasta_per_neighborhood)
     seq_recs.flatten().repartition(partitions).to_textfiles(f"{out_folder}combined_fasta_partition*.faa")
-    
     return
 
 def run():
