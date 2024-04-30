@@ -1,7 +1,7 @@
 # meet-the-neighbors
 Medium scale identification of genomic neighbors in bacterial genomes. This program extracts neighborhoods from a set gffs and its respective protein fasta file with the same name. Extracted neighborhoods will be outputted in a fasta file. Multiple neighborhoods can be placed into the same fasta file. To determine which protein entry in the fasta file belongs to what neighborhood, each entry in the fasta file haas a header with the following naming scheme:
 
-"Protein_id"----"Protein_center"----"gff_with_neighborhood"----"Contig_with_neighborhoods"----"Start_position"-"End_position"
+"Protein_id"!!!"Protein_center"!!!"gff_with_neighborhood"!!!"Contig_with_neighborhoods"!!!"Neighborhood_start_position"-"Neighborhood_end_position"!!!"Protein_start_position"!!!"strand"
 
 ### Main functionalities
 
