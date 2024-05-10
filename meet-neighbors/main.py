@@ -1,6 +1,7 @@
 import subprocess
 import argparse
 import os
+import numpy as np
 import pandas as pd
 import warnings
 import dask
@@ -11,7 +12,6 @@ import pickle as pkl
 import glob
 import logging
 import sys
-
 
 import neighbors_frm_mmseqs as n
 import plot_map_neighborhood_res as pn
@@ -113,7 +113,7 @@ def run(parser):
 
             if (not os.path.isfile(f"{args.out}vfs_in_genomes.tsv") and args.resume) or (not args.resume):
                 logger.debug("Searching for queries in genome database with mmesqs...")
-                subprocess.run(f"mmseqs search {args.out}queryDB {genomes_db} {args.out}vfs_in_genomes {args.out}tmp_search --min-seq-id {args.seq_id} --cov-mode 0 -c {args.cov} -v 2 --split-memory-limit {int(args.mem * (2/3))}G --threads {args.threads} --start-sens 1 --sens-steps 3 -s 7"
+                subprocess.run(f"mmseqs search {args.out}queryDB {genomes_db} {args.out}vfs_in_genomes {args.out}tmp_search --min-seq-id {args.seq_id} --cov-mode 0 -c {args.cov} -v 2 --split-memory-limit {int(args.mem * (2/3))}G --threads {args.threads}  --alignment-mode 3 --start-sens 1 --sens-steps 3 -s 7"
         ,shell=True,check=True)
                 subprocess.run(["mmseqs", "convertalis", f"{args.out}queryDB", f"{genomes_db}", f"{args.out}vfs_in_genomes", f"{args.out}vfs_in_genomes.tsv", "--format-output", "query,target,evalue,pident,qcov,fident,alnlen,qheader,theader,tset,tsetid"] 
         ,check=True)
@@ -121,6 +121,7 @@ def run(parser):
             if (not os.path.isfile(f"{args.out}combined_fastas_clust_res.tsv") and args.resume) or (not args.resume):
                 logger.debug("Pulling neighborhoods...")
                 mmseqs_grp_db,mmseqs_search = n.read_search_tsv(vfdb=args.from_vfdb,input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
+                logger.info(f"Number of query proteins with hits: {len(set(mmseqs_search['query']))}")
                 neighborhood_db = db.map(n.get_neigborhood,mmseqs_grp_db,logger,args)
                 neighborhood_db = neighborhood_db.flatten()
                 n.run_fasta_from_neighborhood(logger,dir_for_fasta=args.genomes,neighborhood=neighborhood_db,
@@ -134,6 +135,7 @@ def run(parser):
                 
             if (len(glob.glob(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv"))==0 and args.resume) or (not args.resume):
                 mmseqs_grp_db,mmseqs_search = n.read_search_tsv(vfdb=args.from_vfdb,input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
+                
                 mmseqs_search = dd.from_pandas(mmseqs_search,npartitions=args.threads) # make it a dask dataframe there instad of in read_search_tsv() b/c its much easier to run
                 logger.debug("Reading in dataframe of clustered proteins from neighborhoods...")
                 mmseqs_clust = pn.prep_cluster_tsv(f"{args.out}combined_fastas_clust_res.tsv",logger)
@@ -141,8 +143,11 @@ def run(parser):
                     mmseqs_groups = list(mmseqs_clust.groupby(['gff', 'strand', 'seq_id'])) #cant groupby on its own with dask
                     mmseqs_groups = db.from_sequence(mmseqs_groups,npartitions=args.threads)
                     mmseqs_clust = db.map(pn.reduce_overlap,mmseqs_groups,window=10000)
+                    del mmseqs_groups # save ram
                     mmseqs_clust = pd.concat(mmseqs_clust.compute())
                     logger.debug(f"Clustering df size after removing overlapping neighborhoods: {mmseqs_clust.shape}")
+                del mmseqs_grp_db
+
                 mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search,args.from_vfdb,logger)
                 
                 subprocess.run(f"mkdir {args.out}clust_res_in_neighborhoods",shell=True,check=True)
@@ -150,22 +155,28 @@ def run(parser):
                 mmseqs_clust = mmseqs_clust.compute()
             
             elif len(glob.glob(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv"))>0 and args.resume:
-                mmseqs_clust = dd.read_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",sep="\t")
+                mmseqs_clust = dd.read_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",sep="\t",dtype={'query': 'object',
+                                                                                                                      'vf_category': 'object','vf_id': 'object',
+                                                                                                                      'vf_name': 'object','vf_subcategory': 'object',
+                                                                                                                      'vfdb_genus': 'object','vfdb_species': 'object'})
                 mmseqs_clust = mmseqs_clust.compute() #reading with dask then computing is usually faster than read w/ pandas
-            logger.debug("Creating neighborhood objects...")
+                logger.info(f"Size of mmseqs cluster results after merge with search results: {mmseqs_clust.shape}")
+            
             warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
             cluster_neighborhoods_by = "query"
-            class_objs = {vf:pn.VF_neighborhoods(cdhit_sub_vf=mmseqs_clust[mmseqs_clust[cluster_neighborhoods_by]==vf],dbscan_eps=0.15,dbscan_min=3)
-                        for vf in set(mmseqs_clust[cluster_neighborhoods_by])}
+            logger.debug("Creating mmseqs cluster groups")
+            mmseqs_clust_nolink_groups = pn.get_query_neighborhood_groups(mmseqs_clust,cluster_neighborhoods_by)
+            class_objs = {vf:pn.VF_neighborhoods(logger,mmseqs_clust_group,query=vf,dbscan_eps=0.15,dbscan_min=3)
+                        for vf,mmseqs_clust_group in mmseqs_clust_nolink_groups}
             neighborhood_plt_df = pd.DataFrame.from_dict([class_objs[n].to_dict() for n in class_objs])
             neighborhood_plt_df = neighborhood_plt_df[neighborhood_plt_df['total_hits']>args.min_hits]
             neighborhood_plt_df['bubble_size'] = (100/(neighborhood_plt_df['noise']+1)).astype(int)
-            
+            del mmseqs_clust_nolink_groups
+
             if args.from_vfdb:
                 # add vf info to neighborhood queries for glm embed color coding and other plotting
                 mmseqs_clust_formerge = mmseqs_clust.drop_duplicates(subset=["query"])
                 neighborhood_plt_df = pd.merge(neighborhood_plt_df,mmseqs_clust_formerge[['query','vf_name','vf_id','vf_subcategory','vf_category','vfdb_species','vfdb_genus']],on='query',how='left')
-
             neighborhood_plt_df.to_csv(f"{args.out}neighborhood_results_df.tsv",sep='\t',index=False,header=True)
 
             if args.glm:
@@ -178,7 +189,7 @@ def run(parser):
                 uniq_neighborhoods_d = {query:class_objs[query].get_neighborhood_names(args.glm_threshold,logger) for query in class_objs}
                 logger.debug("Grabbing tsvs for glm input...")
                 db.map(glm.get_glm_input,query=db.from_sequence(uniq_neighborhoods_d.keys(),npartitions=args.threads),
-                       uniq_neighborhoods_d=uniq_neighborhoods_d,neighborhood_res=neighborhood_plt_df,mmseqs_clust=mmseqs_clust,args=args).persist()
+                       uniq_neighborhoods_d=uniq_neighborhoods_d,neighborhood_res=neighborhood_plt_df,mmseqs_clust=mmseqs_clust,logger=logger,args=args).persist()
         elif args.plt_from_saved:
             neighborhood_plt_df = pd.read_csv(args.plt_from_saved,sep='\t')
         if args.plot:
@@ -196,7 +207,7 @@ def run(parser):
         c.compare_neighborhood_entropy(neighborhood1,neighborhood2,label1=args.name1,label2=args.name2,out=args.out)
         c.compare_uniqhits_trends(neighborhood1,neighborhood2,label1=args.name1,label2=args.name2,out=args.out,write_table=True)
 
-    if args.subcommand == "compute_umap":
+    if args.subcommand == "compute_umap": # gotta change the functions used for this
         logger = get_logger(args.subcommand,args.out)
         logger.debug("Computing umap from gLM...")
         if len(args.out) > 1:
@@ -209,10 +220,11 @@ def run(parser):
         mmseqs_clust = dd.read_csv(f"{neighborhood_dir}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",sep="\t")
         mmseqs_clust = mmseqs_clust.compute()
 
+        logger.debug("Grabbing gLM embeddings...")
         umapper,embedding_df_merge = args.umap_obj,args.embedding_df
         if (not args.umap_obj) and (not args.embedding_df):
-            embedding_df = cu.unpack_embeddings(glm_out,mmseqs_clust)
-            umapper,embedding_df_merge = cu.get_glm_umap_df(embedding_df,mmseqs_clust)
+            glm_res_d_vals_predf =  cu.unpack_embeddings(glm_out,f"{neighborhood_dir}/glm_inputs/",mmseqs_clust)
+            umapper,embedding_df_merge = cu.get_glm_umap_df(glm_res_d_vals_predf)
             handle = open("umapper.obj","wb")
             pkl.dump(umapper,handle)
             handle.close()
