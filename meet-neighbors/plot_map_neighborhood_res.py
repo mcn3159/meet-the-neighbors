@@ -9,49 +9,7 @@ import numpy as np
 from scipy.stats import entropy
 import dask.dataframe as dd
 
-class VF_neighborhoods:
-    def __init__(self,cdhit_sub_vf,dbscan_eps,dbscan_min):
-        self.VF_center = cdhit_sub_vf.iloc[0]['query'] # original protein used to search
-        self.dbscan_eps,self.dbscan_min = dbscan_eps,dbscan_min
-        self.cdhit_sub_piv = pd.pivot_table(cdhit_sub_vf, index='neighborhood_name', aggfunc='size', columns='cluster',
-                                        fill_value=0)
-        self.total_hits = len(self.cdhit_sub_piv)
-
-    def create_dist_matrix(self):
-        self.cdhit_sub_piv.drop_duplicates(inplace=True)
-        dist_matrix = 1 - pairwise_distances(self.cdhit_sub_piv.to_numpy(),metric='hamming')
-        unique_hits = len(self.cdhit_sub_piv)
-        return dist_matrix,unique_hits
-
-    def calc_clusters(self):
-        db_res = DBSCAN(eps=self.dbscan_eps, min_samples=self.dbscan_min, metric='hamming').fit(self.cdhit_sub_piv)
-        return len(set(db_res.labels_)) - (1 if -1 in db_res.labels_ else 0), list(db_res.labels_).count(-1)
-    
-    def neighborhood_freqs(self):
-        unique_neighborhoods = self.cdhit_sub_piv.groupby(self.cdhit_sub_piv.columns.to_list(),as_index=False).size() # https://stackoverflow.com/questions/35584085/how-to-count-duplicate-rows-in-pandas-dataframe
-        return entropy(unique_neighborhoods['size'].to_numpy())
-    
-    def get_neighborhood_names(self,threshold):
-        dist_matrix,unique_hits = self.create_dist_matrix()
-        lower_diag = np.tril(dist_matrix,k=-1) # grabs the lower half diagonal of distance matrix
-        indices_to_remove = np.unique((lower_diag > threshold).nonzero()[0]) # get indices of lower half that contain values above threshold
-        cdhit_sub_piv_sub = self.cdhit_sub_piv.drop(self.cdhit_sub_piv.iloc[list(indices_to_remove)].index) #remove those indices from dataframe
-        return list(cdhit_sub_piv_sub.index)
-
-    def to_dict(self):
-        self.dist_matrix, self.unique_hits = self.create_dist_matrix()
-        self.clusters, self.noise = self.calc_clusters()
-        self.entropy = self.neighborhood_freqs()
-        return {
-            "query" : self.VF_center,
-            "total_hits" : self.total_hits,
-            "unique_hits" : self.unique_hits,
-            "clusters" : self.clusters,
-            "noise" : self.noise,
-            "entropy" : self.entropy
-        }
-
-def prep_cluster_tsv(mmseqs_res_dir):
+def prep_cluster_tsv(mmseqs_res_dir,logger):
     #run for mmseqs clustered results
     #example res: '/Users/mn3159/bigpurple/data/pirontilab/Students/Madu/bigdreams_dl/neighborhood_call/neighbors_rand5k/neighbors_rand5k_clust_res.tsv'
     mmseqs = dd.read_csv(mmseqs_res_dir,sep='\t',names=['rep','locus_tag'])
@@ -69,23 +27,21 @@ def prep_cluster_tsv(mmseqs_res_dir):
     cluster_names = {rep:f"Cluster_{i}" for i,rep in enumerate(set(list(mmseqs.rep)))} #can't list and loop mmseqs col with dask, so I have to compute first
     mmseqs['cluster'] = mmseqs['rep'].map(cluster_names)
 
-    print(f"Size of mmseqs cluster results: {mmseqs.shape}")
-    
-    #mmseqs.head()
+    logger.info(f"Size of mmseqs cluster results: {mmseqs.shape}")
     return mmseqs
 
-def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb):
+def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb,logger):
     # map query search hits to each target neighborhood in the cluster df
     # what if the same protein fasta has multiple proteins with the same name
-    prepped_mmseqs_clust['vfname_gffname'] = prepped_mmseqs_clust['VF_center'] + '!!!' + prepped_mmseqs_clust['gff']
+    prepped_mmseqs_clust['prot_gffname'] = prepped_mmseqs_clust['locus_tag'].str.split('!!!').str[0] + '!!!' + prepped_mmseqs_clust['gff']
     mmseqs_search['gff_name'] = mmseqs_search.tset.str.split('_protein.faa').str[0]
-    mmseqs_search['vfname_gffname'] = mmseqs_search['target'] + '!!!' + mmseqs_search['gff_name']
-    mmseqs_search.drop_duplicates(subset=['vfname_gffname'],inplace=True) # to reduce mmseqs_clust shape explosion
+    mmseqs_search['prot_gffname'] = mmseqs_search['target'] + '!!!' + mmseqs_search['gff_name']
+    mmseqs_search.drop_duplicates(subset=['prot_gffname'],inplace=True) # to reduce mmseqs_clust shape explosion
     if vfdb:
-        mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','vfname_gffname',"vf_name","vf_subcategory","vf_id","vf_category",'vfdb_species','vfdb_genus']],on='vfname_gffname')
+        mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','prot_gffname',"vf_name","vf_subcategory","vf_id","vf_category",'vfdb_species','vfdb_genus']],on='prot_gffname',how="left")
     else:
-        mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','vfname_gffname']],on='vfname_gffname')
-    mmseqs_clust.head()
+        mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','prot_gffname']],on='prot_gffname',how="left")
+    logger.info(f"Head of merge results: {mmseqs_clust.head()}")
     return mmseqs_clust
 
 def reduce_overlap(mmseqs_clust_sub,window):
@@ -111,6 +67,70 @@ def reduce_overlap(mmseqs_clust_sub,window):
     mmseqs_clust_sub_copy["neighborhood_start"] = pd.to_numeric(mmseqs_clust_sub_copy["neighborhood_start"])
     mmseqs_clust_sub_copy = mmseqs_clust_sub_copy[mmseqs_clust_sub_copy['neighborhood_start'].isin(list(similar_range_neighbors.keys()))]
     return mmseqs_clust_sub_copy
+
+def get_query_neighborhood_groups(mmseqs_clust,cluster_neighborhoods_by):
+    # may cause the loss of some queries, which may have been filtered out in red_olp
+    # func results in a dictionary where key is prot query and values are rows in neighborhoods belonging to THAT query
+    # needed b/c some queries may be in another query's neighborhood, resulting in glm inputs with neighborhoods belonging to the wrong query
+    # has not been tested with cluster_neighborhoods_by != query
+    mmseqs_clust_sub = mmseqs_clust.dropna(subset=[cluster_neighborhoods_by])
+    query_prot = mmseqs_clust_sub.groupby(cluster_neighborhoods_by)['prot_gffname'].apply(list).to_dict()
+    nname_query = mmseqs_clust_sub.groupby('neighborhood_name')[cluster_neighborhoods_by].apply(list).to_dict()
+    nname_query = {n:query for n in nname_query for query in nname_query[n] if '!!!'.join(n.split('!!!')[:2]) in query_prot[query]}
+    mmseqs_clust_nolink_targ_query = mmseqs_clust.copy()
+    mmseqs_clust_nolink_targ_query[cluster_neighborhoods_by] = mmseqs_clust.neighborhood_name.map(nname_query) # no link between target and alot of the query col values
+    mmseqs_clust_nolink_groups = mmseqs_clust_nolink_targ_query.groupby(cluster_neighborhoods_by,dropna=True) # did this line and the above so that the below dict comp runs faster hopefully
+    return mmseqs_clust_nolink_groups
+
+class VF_neighborhoods:
+    def __init__(self,logger,mmseqs_clust,query,dbscan_eps,dbscan_min):
+        self.query_prot = query
+        logger.info(f"On query:{self.query_prot}")
+        #maybe I can dictionary groupby queries to neighborhood_names(series) outside of class for speedup d
+        # neighbors_to_compare = mmseqs_clust[mmseqs_clust['query']==self.query_prot]['neighborhood_name']
+        
+        # mmseqs_clust = mmseqs_clust.merge(neighbors_to_compare,on="neighborhood_name")
+        self.dbscan_eps,self.dbscan_min = dbscan_eps,dbscan_min
+        self.cdhit_sub_piv = pd.pivot_table(mmseqs_clust, index='neighborhood_name', aggfunc='size', columns='cluster',
+                                        fill_value=0)
+        self.total_hits = len(self.cdhit_sub_piv)
+
+    def create_dist_matrix(self):
+        self.cdhit_sub_piv.drop_duplicates(inplace=True)
+        dist_matrix = 1 - pairwise_distances(self.cdhit_sub_piv.to_numpy(),metric='hamming')
+        unique_hits = len(self.cdhit_sub_piv)
+        return dist_matrix,unique_hits
+
+    def calc_clusters(self):
+        db_res = DBSCAN(eps=self.dbscan_eps, min_samples=self.dbscan_min, metric='hamming').fit(self.cdhit_sub_piv)
+        return len(set(db_res.labels_)) - (1 if -1 in db_res.labels_ else 0), list(db_res.labels_).count(-1)
+    
+    def neighborhood_freqs(self):
+        unique_neighborhoods = self.cdhit_sub_piv.groupby(self.cdhit_sub_piv.columns.to_list(),as_index=False).size() # https://stackoverflow.com/questions/35584085/how-to-count-duplicate-rows-in-pandas-dataframe
+        return entropy(unique_neighborhoods['size'].to_numpy())
+    
+    def get_neighborhood_names(self,threshold,logger):
+        dist_matrix,unique_hits = self.create_dist_matrix()
+        lower_diag = np.tril(dist_matrix,k=-1) # grabs the lower half diagonal of distance matrix
+        indices_to_remove = np.unique((lower_diag > threshold).nonzero()[0]) # get indices of lower half that contain values above threshold
+        cdhit_sub_piv_sub = self.cdhit_sub_piv.drop(self.cdhit_sub_piv.iloc[list(indices_to_remove)].index) #remove those indices from dataframe
+        logger.info(f"Number of neighborhoods for {self.query_prot} started at: {len(self.cdhit_sub_piv)} ... removed {len(self.cdhit_sub_piv)-len(cdhit_sub_piv_sub)} similar neighborhoods")
+        return list(cdhit_sub_piv_sub.index)
+
+    def to_dict(self):
+        self.dist_matrix, self.unique_hits = self.create_dist_matrix()
+        self.clusters, self.noise = self.calc_clusters()
+        self.entropy = self.neighborhood_freqs()
+        return {
+            "query" : self.query_prot,
+            "total_hits" : self.total_hits,
+            "unique_hits" : self.unique_hits,
+            "clusters" : self.clusters,
+            "noise" : self.noise,
+            "entropy" : self.entropy
+        }
+
+
 
 def plt_neighborhoods(neighborhood_plt_df,out,vfdb):
     #hovering over bubbles may show same type of vf but each bubble is a diff vf query
@@ -190,37 +210,3 @@ def plt_box_entropy(neighborhood_plt_df,out,vfdb):
     fig.write_html(f"{out}entropies_on_{x}.html")
     return
 
-    
-def run():
-    if __name__ == "__main__":
-        print('running')
-        parser = argparse.ArgumentParser(description="Meet-the-neighbors extracts genomic neighborhoods and runs analyses on them from protein fastas and their respective gffs")
-        parser.add_argument("--mmseqs_tsv", type=str, required=True, default=None, help="Give mmseqs clustered tsv")
-        parser.add_argument("--from_vfdb",required=False,action='store_true',help="Group vf centers of neighborhoods by their vf_id")
-        parser.add_argument("--plot",required=False,action='store_true',help="Plot neighborhood cluster results")
-        parser.add_argument("--out",required=True,type=True,help="Give output a name")
-        args = parser.parse_args()
-
-        # mmseqs_res_dir = '/Users/mn3159/bigpurple/data/pirontilab/Students/Madu/bigdreams_dl/neighborhood_call/neighbors_all_ids/neighbors_all_ids_clust_res.tsv'
-        mmseqs_clust = prep_mmseqs_tsv(args.mmseqs_tsv)
-        mmseqs_clust = map_vfcenters_to_vfdb_annot(mmseqs_clust,args.mmseqs_tsv,vfdb=args.from_vfdb)
-
-        cluster_neighborhoods_by = "query"
-        if args.from_vfdb:
-            cluster_neighborhoods_by = "vf_id"
-        warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
-        class_objs = {vf:VF_neighborhoods(cdhit_sub_vf=mmseqs_clust[mmseqs_clust[cluster_neighborhoods_by]==vf],dbscan_eps=0.15,dbscan_min=3)
-                    for vf in set(mmseqs_clust[cluster_neighborhoods_by])}
-        neighborhood_plt_df = pd.DataFrame.from_dict([class_objs[n].to_dict() for n in class_objs])
-        neighborhood_plt_df = neighborhood_plt_df[neighborhood_plt_df['total_hits']>5]
-        neighborhood_plt_df['bubble_size'] = (100/(neighborhood_plt_df['noise']+1)).astype(int)
-        if args.from_vfdb:
-            mmseqs_clust.rename(columns={'query':'vf_query'},inplace=True) #renaming here for clarity and mmseqs orginal tsv uses name query
-            mmseqs_clust_for_merge = mmseqs_clust.drop_duplicates(subset=['vf_query'])
-            neighborhood_plt_df = pd.merge(neighborhood_plt_df,mmseqs_clust_for_merge[['vf_query','vf_name','vf_id','vf_subcategory','vf_category']],on='vf_query',how='left')
-
-        neighborhood_plt_df.to_csv(f"{args.out}_neighborhood_results_df.tsv",sep='\t',index=False,headers=True)
-        plt_neighborhoods(neighborhood_plt_df,args.out)
-        plt_hist_neighborh_clusts(neighborhood_plt_df,args.out)
-        return
-#run()

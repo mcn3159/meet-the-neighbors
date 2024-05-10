@@ -53,7 +53,7 @@ def get_neighborhoodIDs_wGFF(specific_ids,df,window):
         return None
     return neighborhoods
 
-def get_protseq_frmFasta(dir_for_fastas,neighborhood,fasta_per_neighborhood):
+def get_protseq_frmFasta(logger,dir_for_fastas,neighborhood,fasta_per_neighborhood):
     if dir_for_fastas[-1] != '/':
         dir_for_fastas += '/'
     try:
@@ -69,7 +69,7 @@ def get_protseq_frmFasta(dir_for_fastas,neighborhood,fasta_per_neighborhood):
         if fasta_per_neighborhood: #make sure to_fasta is either False, or the name of the file when running
             neighborhood_fasta_name = neighborhood_name + '.faa'
             if Path(neighborhood_fasta_name).is_file():
-                print('Neighborhood fasta with same name already exists')
+                logger.warning('Neighborhood fasta with same name already exists')
             else:
                 with open(neighborhood_fasta_name, 'w') as handle:
                     SeqIO.write(rec, handle, "fasta")
@@ -77,5 +77,5 @@ def get_protseq_frmFasta(dir_for_fastas,neighborhood,fasta_per_neighborhood):
             return list(map(lambda x: x.format("fasta")[:-1],rec))
     except AttributeError:
         traceback.print_exc()
-        print('Item did not contain neighborhood')
+        logger.error('Item did not contain neighborhood')
         return
