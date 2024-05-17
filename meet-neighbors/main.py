@@ -38,10 +38,10 @@ def get_parser():
     extract_neighbors.add_argument("--min_hits","-mih",required=False,type=int,default=5,help="Minimum number of genomes required to report neighborhood")
     extract_neighbors.add_argument("--resume","-r",required=False,action="store_true",help="Resume where program Neighbors left off. Output directory must be the same")
     extract_neighbors.add_argument("--glm",required=False,action="store_true",help="Create output formatted for glm input.")
-    extract_neighbors.add_argument("--glm_threshold",type=str,default=0.95,required=False,help="Sets threshold for the minimal percent difference between neighborhoods to be returned, for a given query")
+    extract_neighbors.add_argument("--glm_threshold",type=float,default=0.95,required=False,help="Sets threshold for the minimal percent difference between neighborhoods to be returned, for a given query")
     extract_neighbors.add_argument("--plot","-p",action="store_true", required=False, default=None, help="Plot data")
     extract_neighbors.add_argument("--plt_from_saved","-pfs",type=str, required=False, default=None, help="Plot from a saved neighborhood tsv")
-    extract_neighbors.add_argument("--neighborhood_size","-ns",type=int, required=False, default=20000, help="Size in bp of neighborhood to extract")
+    extract_neighbors.add_argument("--neighborhood_size","-ns",type=int, required=False, default=20000, help="Size in bp of neighborhood to extract. 10kb less than start, and 10kb above end of center DNA seq")
     extract_neighbors.add_argument("--min_prots","-mip",type=int, required=False, default=3, help="Minimum number of proteins in neighborhood")
     extract_neighbors.add_argument("--max_prots","-map",type=int, required=False, default=30, help="Maximum number of proteins in neighborhood")
     extract_neighbors.add_argument("--red_olp",required=False,action="store_true",help="Reduce amount of overlapping neighborhoods. Default 10kb. Not suggested for glm inputs")
@@ -223,7 +223,7 @@ def run(parser):
         logger.debug("Grabbing gLM embeddings...")
         umapper,embedding_df_merge = args.umap_obj,args.embedding_df
         if (not args.umap_obj) and (not args.embedding_df):
-            glm_res_d_vals_predf =  cu.unpack_embeddings(glm_out,f"{neighborhood_dir}/glm_inputs/",mmseqs_clust)
+            glm_res_d_vals_predf =  cu.unpack_embeddings(glm_out,f"{neighborhood_dir}glm_inputs/",mmseqs_clust)
             umapper,embedding_df_merge = cu.get_glm_umap_df(glm_res_d_vals_predf)
             handle = open("umapper.obj","wb")
             pkl.dump(umapper,handle)
