@@ -38,13 +38,14 @@ def get_parser():
     extract_neighbors.add_argument("--min_hits","-mih",required=False,type=int,default=5,help="Minimum number of genomes required to report neighborhood")
     extract_neighbors.add_argument("--resume","-r",required=False,action="store_true",help="Resume where program Neighbors left off. Output directory must be the same")
     extract_neighbors.add_argument("--glm",required=False,action="store_true",help="Create output formatted for glm input.")
-    extract_neighbors.add_argument("--glm_threshold",type=str,default=0.95,required=False,help="Sets threshold for the minimal percent difference between neighborhoods to be returned, for a given query")
+    extract_neighbors.add_argument("--glm_threshold",type=float,default=0.95,required=False,help="Sets threshold for the minimal percent difference between neighborhoods to be returned, for a given query")
     extract_neighbors.add_argument("--plot","-p",action="store_true", required=False, default=None, help="Plot data")
     extract_neighbors.add_argument("--plt_from_saved","-pfs",type=str, required=False, default=None, help="Plot from a saved neighborhood tsv")
-    extract_neighbors.add_argument("--neighborhood_size","-ns",type=int, required=False, default=20000, help="Size in bp of neighborhood to extract")
+    extract_neighbors.add_argument("--neighborhood_size","-ns",type=int, required=False, default=20000, help="Size in bp of neighborhood to extract. 10kb less than start, and 10kb above end of center DNA seq")
     extract_neighbors.add_argument("--min_prots","-mip",type=int, required=False, default=3, help="Minimum number of proteins in neighborhood")
     extract_neighbors.add_argument("--max_prots","-map",type=int, required=False, default=30, help="Maximum number of proteins in neighborhood")
-    extract_neighbors.add_argument("--red_olp",required=False,action="store_true",help="Reduce amount of overlapping neighborhoods. Default 10kb. Not suggested for glm inputs")
+    extract_neighbors.add_argument("--red_olp",required=False,action="store_true",help="Reduce amount of overlapping neighborhoods. Default 10kb.")
+    extract_neighbors.add_argument("--olp_window",required=False,type=int,default=10000,help="Change allowable overlap between neighborhoods.")
     extract_neighbors.add_argument("-ho","--head_on",required=False,action="store_true",help="Extract neighborhoods with genes in opposite orientations")
 
     comp_neighbors = subparsers.add_parser("compare_neighborhoods",help="Compare multiple neighborhood tsvs")
@@ -124,8 +125,8 @@ def run(parser):
                 logger.info(f"Number of query proteins with hits: {len(set(mmseqs_search['query']))}")
                 neighborhood_db = db.map(n.get_neigborhood,mmseqs_grp_db,logger,args)
                 neighborhood_db = neighborhood_db.flatten()
-                n.run_fasta_from_neighborhood(logger,dir_for_fasta=args.genomes,neighborhood=neighborhood_db,
-                                            fasta_per_uniq_neighborhood=args.fasta_per_neighborhood,out_folder=args.out,test=args.test_fastas,threads=args.threads)
+                n.run_fasta_from_neighborhood(logger,args,dir_for_fasta=args.genomes,neighborhood=neighborhood_db,
+                                            fasta_per_uniq_neighborhood=args.fasta_per_neighborhood,out_folder=args.out,threads=args.threads)
                 logger.debug("Clustering proteins found in all neighborhoods...")
                 subprocess.run(f"mmseqs createdb {args.out}combined_fasta_partition* {args.out}combined_fastas_db -v 2",shell=True,check=True)
                 subprocess.run(f"mmseqs linclust {args.out}combined_fastas_db {args.out}combined_fastas_clust --cov-mode 0 -c {args.cov} --min-seq-id {args.seq_id} --similarity-type 2 -v 2 --split-memory-limit {int(args.mem * (2/3))}G --threads {args.threads} {args.out}tmp_clust",
@@ -142,7 +143,7 @@ def run(parser):
                 if args.red_olp:
                     mmseqs_groups = list(mmseqs_clust.groupby(['gff', 'strand', 'seq_id'])) #cant groupby on its own with dask
                     mmseqs_groups = db.from_sequence(mmseqs_groups,npartitions=args.threads)
-                    mmseqs_clust = db.map(pn.reduce_overlap,mmseqs_groups,window=10000)
+                    mmseqs_clust = db.map(pn.reduce_overlap,mmseqs_groups,window=args.olp_window)
                     del mmseqs_groups # save ram
                     mmseqs_clust = pd.concat(mmseqs_clust.compute())
                     logger.debug(f"Clustering df size after removing overlapping neighborhoods: {mmseqs_clust.shape}")
@@ -223,9 +224,9 @@ def run(parser):
         logger.debug("Grabbing gLM embeddings...")
         umapper,embedding_df_merge = args.umap_obj,args.embedding_df
         if (not args.umap_obj) and (not args.embedding_df):
-            glm_res_d_vals_predf =  cu.unpack_embeddings(glm_out,f"{neighborhood_dir}/glm_inputs/",mmseqs_clust)
+            glm_res_d_vals_predf =  cu.unpack_embeddings(glm_out,f"{neighborhood_dir}glm_inputs/",mmseqs_clust)
             umapper,embedding_df_merge = cu.get_glm_umap_df(glm_res_d_vals_predf)
-            handle = open("umapper.obj","wb")
+            handle = open(f"{args.out}umapper.obj","wb")
             pkl.dump(umapper,handle)
             handle.close()
         else:
