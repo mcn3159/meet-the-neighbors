@@ -51,7 +51,8 @@ def plt_baby(umapper,embedding_df_merge,**kwargs):
     label = kwargs.get("label")
     legend = kwargs.get("legend")
 
-    embedding_df_merge.to_csv(f"{outdir}{plt_name}.tsv",sep="\t",index=False,mode="x")
+    if not os.path.isfile(f"{outdir}{plt_name}.tsv"):
+        embedding_df_merge.to_csv(f"{outdir}{plt_name}.tsv",sep="\t",index=False,mode="x")
 
     p = umap.plot.points(umapper, labels=embedding_df_merge[label],show_legend=legend,width=width)
     p_obj = p.get_figure()
