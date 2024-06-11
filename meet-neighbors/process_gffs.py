@@ -53,14 +53,19 @@ def get_neighborhoodIDs_wGFF(specific_ids,df,window):
         return None
     return neighborhoods
 
-def get_protseq_frmFasta(logger,dir_for_fastas,neighborhood,fasta_per_neighborhood):
+def get_protseq_frmFasta(logger,args,dir_for_fastas,neighborhood,fasta_per_neighborhood):
     if dir_for_fastas[-1] != '/':
         dir_for_fastas += '/'
     try:
         neighborhood_name = f'{neighborhood.iloc[0].VF_center}!!!{neighborhood.iloc[0].gff_name}!!!{neighborhood.iloc[0].seq_id}!!!{neighborhood.iloc[0].start}-{neighborhood.iloc[-1].end}'
         fasta_dir = dir_for_fastas+neighborhood.iloc[0].gff_name+'_protein.faa'
         fasta = SeqIO.parse(fasta_dir,'fasta')
-        rec = filter(lambda x: x.id in list(neighborhood.protein_id),fasta) # subset originial fasta for ids in neighborhood
+        rec = list(filter(lambda x: x.id in list(neighborhood.protein_id),fasta)) # subset originial fasta for ids in neighborhood
+        # remove list in front of filter, in line above
+        if len(rec) < args.min_prots or len(rec) > args.max_prots:
+            #print("working")
+            # some proteins may not be found during filter() in .faa, so remove neighborhood if they go against params
+            return []
         # protein ids need this info for glm input and for later processing
         rec = map(lambda x: SeqRecord(x.seq,id=
                                     x.id+f'!!!{neighborhood_name}'+f'!!!{neighborhood[neighborhood["protein_id"]==x.id]["start"].values[0]}'+

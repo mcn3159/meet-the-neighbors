@@ -46,15 +46,16 @@ def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb,logger):
 
 def reduce_overlap(mmseqs_clust_sub,window):
     # reduce overlapping neighborhood given window
+    # take representative (close to median) of neighborhoods who's start positions are within window
     similar_range_neighbors = {}
     for ran in set(mmseqs_clust_sub[1].locus_range):
         if len(similar_range_neighbors) == 0: 
             similar_range_neighbors[int(ran.split("-")[0])] = [ran]
             continue
         
-        keys_array = np.array(list(similar_range_neighbors.keys()))
-        keys_array_sub = np.absolute(keys_array - int(ran.split("-")[0])) < window
-        res_ind = (keys_array_sub).nonzero()
+        keys_array = np.array(list(similar_range_neighbors.keys())) # get an array of the neighborhood start positions
+        keys_array_sub = np.absolute(keys_array - int(ran.split("-")[0])) < window # group new neigborhoods w/ keys in the same range
+        res_ind = (keys_array_sub).nonzero() # get position of keys within the range of query neighborhood
         if np.size(res_ind) == 1:
             similar_range_neighbors[keys_array[res_ind[0]][0]].append(ran)
         
@@ -85,11 +86,6 @@ def get_query_neighborhood_groups(mmseqs_clust,cluster_neighborhoods_by):
 class VF_neighborhoods:
     def __init__(self,logger,mmseqs_clust,query,dbscan_eps,dbscan_min):
         self.query_prot = query
-        logger.info(f"On query:{self.query_prot}")
-        #maybe I can dictionary groupby queries to neighborhood_names(series) outside of class for speedup d
-        # neighbors_to_compare = mmseqs_clust[mmseqs_clust['query']==self.query_prot]['neighborhood_name']
-        
-        # mmseqs_clust = mmseqs_clust.merge(neighbors_to_compare,on="neighborhood_name")
         self.dbscan_eps,self.dbscan_min = dbscan_eps,dbscan_min
         self.cdhit_sub_piv = pd.pivot_table(mmseqs_clust, index='neighborhood_name', aggfunc='size', columns='cluster',
                                         fill_value=0)
@@ -129,8 +125,6 @@ class VF_neighborhoods:
             "noise" : self.noise,
             "entropy" : self.entropy
         }
-
-
 
 def plt_neighborhoods(neighborhood_plt_df,out,vfdb):
     #hovering over bubbles may show same type of vf but each bubble is a diff vf query
