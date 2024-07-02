@@ -3,7 +3,6 @@ import argparse
 import re
 import dask
 import dask.bag as db
-import _pickle as cPickle
 
 from process_gffs import gff2pandas
 from process_gffs import get_protseq_frmFasta
@@ -42,7 +41,7 @@ def read_search_tsv(**kwargs):
 
 def get_neigborhood(mmseqs_group,logger,args):
     # condition: What if the same protein appears twice in a genome, but has different neighborhoods? They should have the same query
-    gff = args.genomes+'/'+mmseqs_group[1].tset.iloc[0].split('protein.faa')[0]+'genomic.gff'
+    gff = args.genomes+mmseqs_group[1].tset.iloc[0].split('protein.faa')[0]+'genomic.gff'
     gff_df = gff2pandas(gff)
     vf_centers = gff_df[gff_df['protein_id'].isin(list(mmseqs_group[1].target))] # maybe i dont need the list command
     #print(f"{len(vf_centers)} hits found in {gff.split('/')[-1]}")
@@ -64,12 +63,12 @@ def get_neigborhood(mmseqs_group,logger,args):
 
         if len(neighborhood_df) < args.min_prots: #neighborhood centers could be near a contig break causing really small neighborhoods, which isnt helpful info
             if report < max_neighbors_report:
-                logger.warning(f"VF Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are less than {args.min_prots} proteins") #maybe I should output this type of info to a text file
+                logger.warning(f"Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are less than {args.min_prots} proteins") #maybe I should output this type of info to a text file
                 report +=1
             continue
         if len(neighborhood_df) > args.max_prots:
             if report < max_neighbors_report:
-                logger.warning(f"!!! VF Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are more than {args.max_prots} proteins !!!")
+                logger.warning(f"Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are more than {args.max_prots} proteins")
                 report +=1
             continue
         neighborhoods.append(neighborhood_df)

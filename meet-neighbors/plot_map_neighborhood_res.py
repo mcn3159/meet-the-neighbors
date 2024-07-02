@@ -4,6 +4,7 @@ import plotly.graph_objects as go
 import math
 import argparse
 from sklearn.metrics import pairwise_distances
+from sklearn.cluster import AgglomerativeClustering
 from sklearn.cluster import DBSCAN
 import numpy as np
 from scipy.stats import entropy
@@ -93,25 +94,35 @@ class VF_neighborhoods:
 
     def create_dist_matrix(self):
         self.cdhit_sub_piv.drop_duplicates(inplace=True)
-        dist_matrix = 1 - pairwise_distances(self.cdhit_sub_piv.to_numpy(),metric='hamming')
+        dist_matrix = pairwise_distances(self.cdhit_sub_piv.to_numpy(),metric='hamming') # Distances instead of similarity for easier clustering
         unique_hits = len(self.cdhit_sub_piv)
         return dist_matrix,unique_hits
 
-    def calc_clusters(self):
+    def calc_clusters(self): # DBSCAN was used for plotting, I don't use much anymore
         db_res = DBSCAN(eps=self.dbscan_eps, min_samples=self.dbscan_min, metric='hamming').fit(self.cdhit_sub_piv)
         return len(set(db_res.labels_)) - (1 if -1 in db_res.labels_ else 0), list(db_res.labels_).count(-1)
     
-    def neighborhood_freqs(self):
+    def neighborhood_freqs(self): # get neighborhood entropies
         unique_neighborhoods = self.cdhit_sub_piv.groupby(self.cdhit_sub_piv.columns.to_list(),as_index=False).size() # https://stackoverflow.com/questions/35584085/how-to-count-duplicate-rows-in-pandas-dataframe
         return entropy(unique_neighborhoods['size'].to_numpy())
     
     def get_neighborhood_names(self,threshold,logger):
         dist_matrix,unique_hits = self.create_dist_matrix()
-        lower_diag = np.tril(dist_matrix,k=-1) # grabs the lower half diagonal of distance matrix
-        indices_to_remove = np.unique((lower_diag > threshold).nonzero()[0]) # get indices of lower half that contain values above threshold
-        cdhit_sub_piv_sub = self.cdhit_sub_piv.drop(self.cdhit_sub_piv.iloc[list(indices_to_remove)].index) #remove those indices from dataframe
-        logger.info(f"Number of neighborhoods for {self.query_prot} started at: {len(self.cdhit_sub_piv)} ... removed {len(self.cdhit_sub_piv)-len(cdhit_sub_piv_sub)} similar neighborhoods")
-        return list(cdhit_sub_piv_sub.index)
+        if len(dist_matrix) == 1: # don't cluster with only one neighborhood
+            return list(self.cdhit_sub_piv.index)
+        # picked single linkage b/c I should get the most unique/least amount of clusters, classification performance is good w/ the most unique neighborhoods
+        neighborhood_clusters = AgglomerativeClustering(n_clusters=None,distance_threshold=threshold,metric="precomputed",linkage="single").fit(dist_matrix) 
+        unique_clusters = np.unique(neighborhood_clusters.labels_)
+        rep_neighborhood_indices = []
+        for c in unique_clusters:
+            clust_inds = np.where(neighborhood_clusters.labels_==c)[0] # get indices for cluster members
+            dist_matrix_sub = dist_matrix[clust_inds] # want to find the centroid for clust members not whole matrix
+            centroid = np.mean(dist_matrix_sub, axis=1) # get the average distances
+            distances_to_centroid = np.sum((dist_matrix_sub - centroid[:, np.newaxis]) ** 2, axis=1) # compute the euclidean distance to centroid, np.newaxis shapes centroid to allow for subtraction
+            index_closest_to_centroid = np.argmin(distances_to_centroid) # get the index closest to centroid
+            rep_neighborhood_indices.append(index_closest_to_centroid)
+        cdhit_sub_piv_sub = self.cdhit_sub_piv.iloc[rep_neighborhood_indices,:] # want centroid neighborhoods, subset og df for this
+        return list(cdhit_sub_piv_sub.index) # indicies are neighborhood names
 
     def to_dict(self):
         self.dist_matrix, self.unique_hits = self.create_dist_matrix()

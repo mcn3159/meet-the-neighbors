@@ -35,10 +35,10 @@ def get_parser():
     extract_neighbors.add_argument("--test_fastas", type=str, required=False, default=None, help="Run with test fastas?")
     extract_neighbors.add_argument("--fasta_per_neighborhood", required=False, type=str, default=None, help="To get one fasta per neighborhood")
     extract_neighbors.add_argument("--from_vfdb","-v",required=False,action="store_true",default=None,help="Indicate if search queries are solely from vfdb, to then group by their vf_name")
-    extract_neighbors.add_argument("--min_hits","-mih",required=False,type=int,default=5,help="Minimum number of genomes required to report neighborhood")
+    extract_neighbors.add_argument("--min_hits","-mih",required=False,type=int,default=0,help="Minimum number of genomes required to report neighborhood")
     extract_neighbors.add_argument("--resume","-r",required=False,action="store_true",help="Resume where program Neighbors left off. Output directory must be the same")
     extract_neighbors.add_argument("--glm",required=False,action="store_true",help="Create output formatted for glm input.")
-    extract_neighbors.add_argument("--glm_threshold",type=float,default=0.95,required=False,help="Sets threshold for the minimal percent difference between neighborhoods to be returned, for a given query")
+    extract_neighbors.add_argument("--glm_threshold",type=float,default=0.20,required=False,help="Sets threshold for the minimal percent difference between neighborhoods to be returned, for a given query")
     extract_neighbors.add_argument("--plot","-p",action="store_true", required=False, default=None, help="Plot data")
     extract_neighbors.add_argument("--plt_from_saved","-pfs",type=str, required=False, default=None, help="Plot from a saved neighborhood tsv")
     extract_neighbors.add_argument("--neighborhood_size","-ns",type=int, required=False, default=20000, help="Size in bp of neighborhood to extract. 10kb less than start, and 10kb above end of center DNA seq")
@@ -129,7 +129,8 @@ def run(parser):
                                             fasta_per_uniq_neighborhood=args.fasta_per_neighborhood,out_folder=args.out,threads=args.threads)
                 logger.debug("Clustering proteins found in all neighborhoods...")
                 subprocess.run(f"mmseqs createdb {args.out}combined_fasta_partition* {args.out}combined_fastas_db -v 2",shell=True,check=True)
-                subprocess.run(f"mmseqs linclust {args.out}combined_fastas_db {args.out}combined_fastas_clust --cov-mode 0 -c {args.cov} --min-seq-id {args.seq_id} --similarity-type 2 -v 2 --split-memory-limit {int(args.mem * (2/3))}G --threads {args.threads} {args.out}tmp_clust",
+                # hard coded some clustering params b/c the goal is to reduce redundant proteins
+                subprocess.run(f"mmseqs linclust {args.out}combined_fastas_db {args.out}combined_fastas_clust --cov-mode 0 -c 0.90 --min-seq-id 0.90 --similarity-type 2 -v 2 --split-memory-limit {int(args.mem * (2/3))}G --threads {args.threads} {args.out}tmp_clust",
                                 shell=True,check=True)
                 subprocess.run(f"mmseqs createtsv {args.out}combined_fastas_db {args.out}combined_fastas_db {args.out}combined_fastas_clust {args.out}combined_fastas_clust_res.tsv"
         ,shell=True,check=True)
@@ -188,6 +189,12 @@ def run(parser):
                 subprocess.run(f"mmseqs convert2fasta {args.out}combined_fastas_clust_rep {args.out}combined_fastas_clust_rep.fasta",shell=True,check=True)
 
                 uniq_neighborhoods_d = {query:class_objs[query].get_neighborhood_names(args.glm_threshold,logger) for query in class_objs}
+                # get an idea of the number of filtered out neighborhoods that the glm will NOT see
+                mmseqs_groups = mmseqs_clust.groupby('query')['neighborhood_name']
+                neighborhood_diff = {query:[len(mmseqs_groups.get_group(query)),len(uniq_neighborhoods_d[query])] for query in uniq_neighborhoods_d}
+                pd.DataFrame.from_dict(neighborhood_diff,orient='index',columns=["Total_Neighborhoods","Total_Representative_Neighborhoods"]).to_csv(f"{args.out}Number_filtrd_Neighborhoods.tsv",sep="\t")
+                del mmseqs_groups
+                
                 logger.debug("Grabbing tsvs for glm input...")
                 db.map(glm.get_glm_input,query=db.from_sequence(uniq_neighborhoods_d.keys(),npartitions=args.threads),
                        uniq_neighborhoods_d=uniq_neighborhoods_d,neighborhood_res=neighborhood_plt_df,mmseqs_clust=mmseqs_clust,logger=logger,args=args).persist()
@@ -218,7 +225,7 @@ def run(parser):
             dirs_l = check_dirs(args.neighborhood_run,args.glm_out)
             neighborhood_dir,glm_out = dirs_l[0],dirs_l[1]
 
-        mmseqs_clust = dd.read_csv(f"{neighborhood_dir}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",sep="\t")
+        mmseqs_clust = dd.read_csv(f"{neighborhood_dir}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",sep="\t",dtype={'query': 'object'})
         mmseqs_clust = mmseqs_clust.compute()
 
         logger.debug("Grabbing gLM embeddings...")
