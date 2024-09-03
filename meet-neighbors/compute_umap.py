@@ -28,7 +28,7 @@ def unpack_embeddings(glm_out_dir,glm_in_dir,mmseqs_clust): # lowkey don't need 
         glm_batch = np.array(glm_batch, dtype=object)[input_tsv['glm_indicies'].values] #subset gLM batch for indicies of VF centers
         assert len(glm_batch) == len(input_tsv),"gLM batch size subset and input tsv size do not match"
         for i,embed in enumerate(glm_batch): # there should be an embedding for each row in input_tsv or for each VF center
-            glm_res_d_vals_predf[vf+"!!!"+str(i)] = np.append(embed[1],input_tsv.iloc[0].loc[['neighborhood_name','vf_name','vfid','vf_category','species','genus']].values)
+            glm_res_d_vals_predf[vf+"!!!"+str(i)] = np.append(embed[1],input_tsv.iloc[i].loc[['neighborhood_name','vf_name','vfid','vf_category','species','genus']].values) # used i to index input_tsv instead of 0 b/c neighborhood names are different for each row
             assert embed[0] in query_reps, f"Embedding {embed[0]} in gLM batch {vf} is not a rep of a target VF." # make sure 
 
     return glm_res_d_vals_predf
