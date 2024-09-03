@@ -38,7 +38,7 @@ def get_parser():
     extract_neighbors.add_argument("--min_hits","-mih",required=False,type=int,default=0,help="Minimum number of genomes required to report neighborhood")
     extract_neighbors.add_argument("--resume","-r",required=False,action="store_true",help="Resume where program Neighbors left off. Output directory must be the same")
     extract_neighbors.add_argument("--glm",required=False,action="store_true",help="Create output formatted for glm input.")
-    extract_neighbors.add_argument("--glm_threshold",type=float,default=0.10,required=False,help="Threshold for the minimal percent difference between neighborhoods to be returned, for a given query")
+    extract_neighbors.add_argument("--glm_threshold",type=float,default=0.10,required=False,help="Threshold for the minimal percent difference between neighborhoods to be returned, for a given query. Use 0 to disable this type of neighborhood reduction")
     extract_neighbors.add_argument("--glm_cluster",type=str,default="complete",required=False,help="Sklearn agglomerative clustering linkage method to link similar neighborhoods")
     extract_neighbors.add_argument("--plot","-p",action="store_true", required=False, default=None, help="Plot data")
     extract_neighbors.add_argument("--plt_from_saved","-pfs",type=str, required=False, default=None, help="Plot from a saved neighborhood tsv")
