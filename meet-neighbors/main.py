@@ -38,7 +38,8 @@ def get_parser():
     extract_neighbors.add_argument("--min_hits","-mih",required=False,type=int,default=0,help="Minimum number of genomes required to report neighborhood")
     extract_neighbors.add_argument("--resume","-r",required=False,action="store_true",help="Resume where program Neighbors left off. Output directory must be the same")
     extract_neighbors.add_argument("--glm",required=False,action="store_true",help="Create output formatted for glm input.")
-    extract_neighbors.add_argument("--glm_threshold",type=float,default=0.20,required=False,help="Sets threshold for the minimal percent difference between neighborhoods to be returned, for a given query")
+    extract_neighbors.add_argument("--glm_threshold",type=float,default=0.10,required=False,help="Threshold for the minimal percent difference between neighborhoods to be returned, for a given query")
+    extract_neighbors.add_argument("--glm_cluster",type=str,default="complete",required=False,help="Sklearn agglomerative clustering linkage method to link similar neighborhoods")
     extract_neighbors.add_argument("--plot","-p",action="store_true", required=False, default=None, help="Plot data")
     extract_neighbors.add_argument("--plt_from_saved","-pfs",type=str, required=False, default=None, help="Plot from a saved neighborhood tsv")
     extract_neighbors.add_argument("--neighborhood_size","-ns",type=int, required=False, default=20000, help="Size in bp of neighborhood to extract. 10kb less than start, and 10kb above end of center DNA seq")
@@ -142,6 +143,7 @@ def run(parser):
                 logger.debug("Reading in dataframe of clustered proteins from neighborhoods...")
                 mmseqs_clust = pn.prep_cluster_tsv(f"{args.out}combined_fastas_clust_res.tsv",logger)
                 if args.red_olp:
+                    # reduce the number of neighborhoods that overalp in terms of location
                     mmseqs_groups = list(mmseqs_clust.groupby(['gff', 'strand', 'seq_id'])) #cant groupby on its own with dask
                     mmseqs_groups = db.from_sequence(mmseqs_groups,npartitions=args.threads)
                     mmseqs_clust = db.map(pn.reduce_overlap,mmseqs_groups,window=args.olp_window)
@@ -166,8 +168,10 @@ def run(parser):
             
             warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
             cluster_neighborhoods_by = "query"
-            logger.debug("Creating mmseqs cluster groups")
+            logger.debug("Creating groups of neighborhoods by their originial query")
             mmseqs_clust_nolink_groups = pn.get_query_neighborhood_groups(mmseqs_clust,cluster_neighborhoods_by)
+
+            # run several analyses on neighborhoodss
             class_objs = {vf:pn.VF_neighborhoods(logger,mmseqs_clust_group,query=vf,dbscan_eps=0.15,dbscan_min=3)
                         for vf,mmseqs_clust_group in mmseqs_clust_nolink_groups}
             neighborhood_plt_df = pd.DataFrame.from_dict([class_objs[n].to_dict() for n in class_objs])
@@ -182,22 +186,37 @@ def run(parser):
             neighborhood_plt_df.to_csv(f"{args.out}neighborhood_results_df.tsv",sep='\t',index=False,header=True)
 
             if args.glm:
-                glm_input_out = f"glm_inputs/"
-                subprocess.run(f"mkdir {args.out}{glm_input_out}",shell=True,check=True) #should return an error if the path already exists, don't want to make duplicates
+                # take neighborhoods in class_objs and prep them to be fed into gLM for embeddings
+                glm_input_out = f"glm_inputs_{args.glm_cluster}_jaccard{str(args.glm_threshold)[1:]}/"
+                subprocess.run(f"mkdir {args.out}{glm_input_out}",shell=True,check=True) # should return an error if the path already exists, don't want to make duplicates
                 logger.debug("Grabbing cluster representatives...")
-                subprocess.run(f"mmseqs createsubdb {args.out}combined_fastas_clust {args.out}combined_fastas_db {args.out}combined_fastas_clust_rep",shell=True,check=True)
-                subprocess.run(f"mmseqs convert2fasta {args.out}combined_fastas_clust_rep {args.out}combined_fastas_clust_rep.fasta",shell=True,check=True)
+                if (not os.path.isfile(f"{args.out}combined_fastas_clust_rep.fasta") and args.resume): # save time if resuming
+                    subprocess.run(f"mmseqs createsubdb {args.out}combined_fastas_clust {args.out}combined_fastas_db {args.out}combined_fastas_clust_rep",shell=True,check=True)
+                    subprocess.run(f"mmseqs convert2fasta {args.out}combined_fastas_clust_rep {args.out}combined_fastas_clust_rep.fasta",shell=True,check=True)
 
-                uniq_neighborhoods_d = {query:class_objs[query].get_neighborhood_names(args.glm_threshold,logger) for query in class_objs}
+                # reduce the number of similar neighborhoods by the amount of similar protein with a given threshold
+                uniq_neighborhoods_d = {query:class_objs[query].get_neighborhood_names(args.glm_threshold,args.glm_cluster,logger) for query in class_objs}
                 # get an idea of the number of filtered out neighborhoods that the glm will NOT see
-                mmseqs_groups = mmseqs_clust.groupby('query')['neighborhood_name']
-                neighborhood_diff = {query:[len(mmseqs_groups.get_group(query)),len(uniq_neighborhoods_d[query])] for query in uniq_neighborhoods_d}
+                mmseqs_groups = mmseqs_clust.groupby('query')['neighborhood_name'].apply(list).to_dict()
+                neighborhood_diff = {query:[len(mmseqs_groups[query]),len(uniq_neighborhoods_d[query])] for query in uniq_neighborhoods_d}
                 pd.DataFrame.from_dict(neighborhood_diff,orient='index',columns=["Total_Neighborhoods","Total_Representative_Neighborhoods"]).to_csv(f"{args.out}Number_filtrd_Neighborhoods.tsv",sep="\t")
-                del mmseqs_groups
+                #del mmseqs_groups
                 
                 logger.debug("Grabbing tsvs for glm input...")
-                db.map(glm.get_glm_input,query=db.from_sequence(uniq_neighborhoods_d.keys(),npartitions=args.threads),
-                       uniq_neighborhoods_d=uniq_neighborhoods_d,neighborhood_res=neighborhood_plt_df,mmseqs_clust=mmseqs_clust,logger=logger,args=args).persist()
+                # mmseqs cluster df can be really big, and can cause OOM issues when passed to so many threads. So I split up the df in "its" that should fit into mem
+                mmseqs_clust_mem = mmseqs_clust.memory_usage(index=True).sum() / 1000000000 # get mmseqs clust memory interms of GB 
+                its = 2
+                qs_for_glm = np.array(list(uniq_neighborhoods_d.keys()))
+                while ((mmseqs_clust_mem/its) * args.threads) + mmseqs_clust_mem > args.mem:
+                    its+=1
+                logger.debug(f"Splitting mmseqs clustering df into {its} chunks...")
+                qs_for_glm = np.array_split(qs_for_glm,its)
+                for chunk in qs_for_glm:
+                    neighborhoods_to_subset_for = sum([mmseqs_groups[q] for q in chunk],[])
+                    mmseqs_clust_sub = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(neighborhoods_to_subset_for)]
+                    db.map(glm.get_glm_input,query=db.from_sequence(chunk,npartitions=args.threads),
+                        uniq_neighborhoods_d=uniq_neighborhoods_d,neighborhood_res=neighborhood_plt_df,mmseqs_clust=mmseqs_clust_sub,glm_input_dir=glm_input_out,logger=logger,args=args).persist()
+                    
         elif args.plt_from_saved:
             neighborhood_plt_df = pd.read_csv(args.plt_from_saved,sep='\t')
         if args.plot:
