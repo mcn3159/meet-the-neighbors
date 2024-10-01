@@ -127,7 +127,7 @@ class VF_neighborhoods:
                 rep_neighborhood_indices.append(clust_inds[0])
             else:
                 # want to find the centroid for clust members not whole matrix
-                print("Clust inds with multiple members:",clust_inds)
+                # print("Clust inds with multiple members:",clust_inds)
                 dist_matrix_sub = dist_matrix[np.ix_(list(clust_inds),list(clust_inds))] # np.ix_ allows for indexing of matrices at row and col level, want centroid of clu members at row and col level
                 centroid = np.mean(dist_matrix_sub, axis=1) # get the average distances
                 distances_to_centroid = np.sum((dist_matrix_sub - centroid[:, np.newaxis]) ** 2, axis=1) # compute the euclidean distance to centroid, np.newaxis shapes centroid to allow for subtraction

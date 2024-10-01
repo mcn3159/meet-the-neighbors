@@ -57,6 +57,7 @@ def get_parser():
     comp_neighbors.add_argument('--out','-o',type=str,default='',required=False,help="Output directory")
 
     compute_umap = subparsers.add_parser("compute_umap",help="Compute umap from glm_outputs")
+    compute_umap.add_argument("--glm_in",type=str,required=False,default="glm_inputs",help="Give directory containing inputs used to generate glm embbeds")
     compute_umap.add_argument("--glm_out",type=str,required=True,help="Give directory containing glm embeddings")
     compute_umap.add_argument("--neighborhood_run",type=str,required=True,help="Give directory containing neighborhoods used for glm inputs")
     compute_umap.add_argument("--umap_obj",type=str,required=False,help="Path to umap object file")
@@ -166,6 +167,13 @@ def run(parser):
                 mmseqs_clust = mmseqs_clust.compute() #reading with dask then computing is usually faster than read w/ pandas
                 logger.info(f"Size of mmseqs cluster results after merge with search results: {mmseqs_clust.shape}")
             
+            # make mmseqs_clust more memory efficient
+            if 'vf_category' in mmseqs_clust.columns:
+                mmseqs_clust = mmseqs_clust.astype({'query':'category','vf_category': 'category','vf_id': 'category',
+                                                    'vf_name': 'category','vf_subcategory': 'category','vfdb_genus': 'category','vfdb_species': 'category'})
+            else:
+                mmseqs_clust = mmseqs_clust.astype({'query':'category'})
+            
             warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
             cluster_neighborhoods_by = "query"
             logger.debug("Creating groups of neighborhoods by their originial query")
@@ -200,17 +208,18 @@ def run(parser):
                 mmseqs_groups = mmseqs_clust.groupby('query')['neighborhood_name'].apply(list).to_dict()
                 neighborhood_diff = {query:[len(mmseqs_groups[query]),len(uniq_neighborhoods_d[query])] for query in uniq_neighborhoods_d}
                 pd.DataFrame.from_dict(neighborhood_diff,orient='index',columns=["Total_Neighborhoods","Total_Representative_Neighborhoods"]).to_csv(f"{args.out}Number_filtrd_Neighborhoods.tsv",sep="\t")
-                #del mmseqs_groups
                 
-                logger.debug("Grabbing tsvs for glm input...")
                 # mmseqs cluster df can be really big, and can cause OOM issues when passed to so many threads. So I split up the df in "its" that should fit into mem
-                mmseqs_clust_mem = mmseqs_clust.memory_usage(index=True).sum() / 1000000000 # get mmseqs clust memory interms of GB 
-                its = 2
+                logger.debug("Grabbing tsvs for glm input...")
+                mmseqs_clust_mem = mmseqs_clust.memory_usage(deep=True).sum() / 10**8 # get mmseqs clust memory interms of GB 
+                its = 1
                 qs_for_glm = np.array(list(uniq_neighborhoods_d.keys()))
-                while ((mmseqs_clust_mem/its) * args.threads) + mmseqs_clust_mem > args.mem:
+                while (mmseqs_clust_mem/its) * args.threads > args.mem:
                     its+=1
-                logger.debug(f"Splitting mmseqs clustering df into {its} chunks...")
                 qs_for_glm = np.array_split(qs_for_glm,its)
+
+                # get the glm inputs for all neighborhoods, by iterating through a "chunk" number of neighborhoods
+                logger.debug(f"Splitting mmseqs clustering df into {its} chunks...")
                 for chunk in qs_for_glm:
                     neighborhoods_to_subset_for = sum([mmseqs_groups[q] for q in chunk],[])
                     mmseqs_clust_sub = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(neighborhoods_to_subset_for)]
@@ -237,20 +246,23 @@ def run(parser):
     if args.subcommand == "compute_umap": # gotta change the functions used for this
         logger = get_logger(args.subcommand,args.out)
         logger.debug("Computing umap from gLM...")
+
+        # make sure directories have a slash at the end
         if len(args.out) > 1:
-            dirs_l = check_dirs(args.neighborhood_run,args.glm_out,args.out)
-            neighborhood_dir,glm_out,args.out = dirs_l[0],dirs_l[1],dirs_l[2]
+            dirs_l = check_dirs(args.neighborhood_run,args.glm_out,args.glm_in,args.out)
+            neighborhood_dir,glm_out,glm_in,args.out = dirs_l[0],dirs_l[1],dirs_l[2],dirs_l[3]
         else:
-            dirs_l = check_dirs(args.neighborhood_run,args.glm_out)
-            neighborhood_dir,glm_out = dirs_l[0],dirs_l[1]
+            dirs_l = check_dirs(args.neighborhood_run,args.glm_out,args.glm_in)
+            neighborhood_dir,glm_out,glm_in = dirs_l[0],dirs_l[1],dirs_l[2]
 
         mmseqs_clust = dd.read_csv(f"{neighborhood_dir}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",sep="\t",dtype={'query': 'object'})
         mmseqs_clust = mmseqs_clust.compute()
 
         logger.debug("Grabbing gLM embeddings...")
         umapper,embedding_df_merge = args.umap_obj,args.embedding_df
+        # for whatever reason the below doesn't work on the first try, have to rerun with the umap_obj and embedding_df arguments given
         if (not args.umap_obj) and (not args.embedding_df):
-            glm_res_d_vals_predf =  cu.unpack_embeddings(glm_out,f"{neighborhood_dir}glm_inputs/",mmseqs_clust)
+            glm_res_d_vals_predf =  cu.unpack_embeddings(glm_out,f"{neighborhood_dir}{glm_in}",mmseqs_clust)
             umapper,embedding_df_merge = cu.get_glm_umap_df(glm_res_d_vals_predf)
             handle = open(f"{args.out}umapper.obj","wb")
             pkl.dump(umapper,handle)
