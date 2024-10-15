@@ -198,7 +198,7 @@ def run(parser):
                 glm_input_out = f"glm_inputs_{args.glm_cluster}_jaccard{str(args.glm_threshold)[1:]}/"
                 subprocess.run(f"mkdir {args.out}{glm_input_out}",shell=True,check=True) # should return an error if the path already exists, don't want to make duplicates
                 logger.debug("Grabbing cluster representatives...")
-                if (not os.path.isfile(f"{args.out}combined_fastas_clust_rep.fasta") and args.resume): # save time if resuming
+                if not os.path.isfile(f"{args.out}combined_fastas_clust_rep.fasta"): # save time if resuming
                     subprocess.run(f"mmseqs createsubdb {args.out}combined_fastas_clust {args.out}combined_fastas_db {args.out}combined_fastas_clust_rep",shell=True,check=True)
                     subprocess.run(f"mmseqs convert2fasta {args.out}combined_fastas_clust_rep {args.out}combined_fastas_clust_rep.fasta",shell=True,check=True)
 
@@ -251,6 +251,8 @@ def run(parser):
         if len(args.out) > 1:
             dirs_l = check_dirs(args.neighborhood_run,args.glm_out,args.glm_in,args.out)
             neighborhood_dir,glm_out,glm_in,args.out = dirs_l[0],dirs_l[1],dirs_l[2],dirs_l[3]
+            if not os.path.exists(args.out):
+                os.mkdir(args.out)
         else:
             dirs_l = check_dirs(args.neighborhood_run,args.glm_out,args.glm_in)
             neighborhood_dir,glm_out,glm_in = dirs_l[0],dirs_l[1],dirs_l[2]
@@ -258,11 +260,11 @@ def run(parser):
         mmseqs_clust = dd.read_csv(f"{neighborhood_dir}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",sep="\t",dtype={'query': 'object'})
         mmseqs_clust = mmseqs_clust.compute()
 
-        logger.debug("Grabbing gLM embeddings...")
+        logger.debug(f"Grabbing gLM from {glm_out} \nGiven these inputs: {glm_in}")
         umapper,embedding_df_merge = args.umap_obj,args.embedding_df
         # for whatever reason the below doesn't work on the first try, have to rerun with the umap_obj and embedding_df arguments given
         if (not args.umap_obj) and (not args.embedding_df):
-            glm_res_d_vals_predf =  cu.unpack_embeddings(glm_out,f"{neighborhood_dir}{glm_in}",mmseqs_clust)
+            glm_res_d_vals_predf =  cu.unpack_embeddings(glm_out,glm_in,mmseqs_clust)
             umapper,embedding_df_merge = cu.get_glm_umap_df(glm_res_d_vals_predf)
             handle = open(f"{args.out}umapper.obj","wb")
             pkl.dump(umapper,handle)

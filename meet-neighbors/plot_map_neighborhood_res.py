@@ -51,7 +51,7 @@ def reduce_overlap(mmseqs_clust_sub,window):
     # reduce overlapping neighborhood given window
     # take representative (close to median) of neighborhoods who's start positions are within window
     similar_range_neighbors = {}
-    for ran in set(mmseqs_clust_sub[1].locus_range):
+    for ran in set(mmseqs_clust_sub[1].sort_values(by='locus_range').locus_range):
         if len(similar_range_neighbors) == 0: 
             similar_range_neighbors[int(ran.split("-")[0])] = [ran]
             continue
