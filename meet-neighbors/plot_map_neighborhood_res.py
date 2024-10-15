@@ -3,8 +3,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 import math
 import argparse
+import warnings
 from sklearn.metrics import pairwise_distances
+from sklearn.cluster import AgglomerativeClustering
 from sklearn.cluster import DBSCAN
+from sklearn.exceptions import DataConversionWarning
 import numpy as np
 from scipy.stats import entropy
 import dask.dataframe as dd
@@ -46,15 +49,16 @@ def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb,logger):
 
 def reduce_overlap(mmseqs_clust_sub,window):
     # reduce overlapping neighborhood given window
+    # take representative (close to median) of neighborhoods who's start positions are within window
     similar_range_neighbors = {}
-    for ran in set(mmseqs_clust_sub[1].locus_range):
+    for ran in set(mmseqs_clust_sub[1].sort_values(by='locus_range').locus_range):
         if len(similar_range_neighbors) == 0: 
             similar_range_neighbors[int(ran.split("-")[0])] = [ran]
             continue
         
-        keys_array = np.array(list(similar_range_neighbors.keys()))
-        keys_array_sub = np.absolute(keys_array - int(ran.split("-")[0])) < window
-        res_ind = (keys_array_sub).nonzero()
+        keys_array = np.array(list(similar_range_neighbors.keys())) # get an array of the neighborhood start positions
+        keys_array_sub = np.absolute(keys_array - int(ran.split("-")[0])) < window # group new neigborhoods w/ keys in the same range
+        res_ind = (keys_array_sub).nonzero() # get position of keys within the range of query neighborhood
         if np.size(res_ind) == 1:
             similar_range_neighbors[keys_array[res_ind[0]][0]].append(ran)
         
@@ -85,11 +89,6 @@ def get_query_neighborhood_groups(mmseqs_clust,cluster_neighborhoods_by):
 class VF_neighborhoods:
     def __init__(self,logger,mmseqs_clust,query,dbscan_eps,dbscan_min):
         self.query_prot = query
-        logger.info(f"On query:{self.query_prot}")
-        #maybe I can dictionary groupby queries to neighborhood_names(series) outside of class for speedup d
-        # neighbors_to_compare = mmseqs_clust[mmseqs_clust['query']==self.query_prot]['neighborhood_name']
-        
-        # mmseqs_clust = mmseqs_clust.merge(neighbors_to_compare,on="neighborhood_name")
         self.dbscan_eps,self.dbscan_min = dbscan_eps,dbscan_min
         self.cdhit_sub_piv = pd.pivot_table(mmseqs_clust, index='neighborhood_name', aggfunc='size', columns='cluster',
                                         fill_value=0)
@@ -97,25 +96,45 @@ class VF_neighborhoods:
 
     def create_dist_matrix(self):
         self.cdhit_sub_piv.drop_duplicates(inplace=True)
-        dist_matrix = 1 - pairwise_distances(self.cdhit_sub_piv.to_numpy(),metric='hamming')
+        warnings.filterwarnings(action='ignore', category=DataConversionWarning)
+        dist_matrix = pairwise_distances(self.cdhit_sub_piv.to_numpy(),metric='jaccard') # Distances instead of similarity for easier clustering
         unique_hits = len(self.cdhit_sub_piv)
         return dist_matrix,unique_hits
 
-    def calc_clusters(self):
-        db_res = DBSCAN(eps=self.dbscan_eps, min_samples=self.dbscan_min, metric='hamming').fit(self.cdhit_sub_piv)
+    def calc_clusters(self): # DBSCAN was used for plotting, I don't use much anymore
+        warnings.filterwarnings(action='ignore', category=DataConversionWarning)
+        db_res = DBSCAN(eps=self.dbscan_eps, min_samples=self.dbscan_min, metric='jaccard').fit(self.cdhit_sub_piv)
         return len(set(db_res.labels_)) - (1 if -1 in db_res.labels_ else 0), list(db_res.labels_).count(-1)
     
-    def neighborhood_freqs(self):
+    def neighborhood_freqs(self): # get neighborhood entropies
         unique_neighborhoods = self.cdhit_sub_piv.groupby(self.cdhit_sub_piv.columns.to_list(),as_index=False).size() # https://stackoverflow.com/questions/35584085/how-to-count-duplicate-rows-in-pandas-dataframe
         return entropy(unique_neighborhoods['size'].to_numpy())
     
-    def get_neighborhood_names(self,threshold,logger):
+    def get_neighborhood_names(self,threshold,linkage_method,logger):
         dist_matrix,unique_hits = self.create_dist_matrix()
-        lower_diag = np.tril(dist_matrix,k=-1) # grabs the lower half diagonal of distance matrix
-        indices_to_remove = np.unique((lower_diag > threshold).nonzero()[0]) # get indices of lower half that contain values above threshold
-        cdhit_sub_piv_sub = self.cdhit_sub_piv.drop(self.cdhit_sub_piv.iloc[list(indices_to_remove)].index) #remove those indices from dataframe
-        logger.info(f"Number of neighborhoods for {self.query_prot} started at: {len(self.cdhit_sub_piv)} ... removed {len(self.cdhit_sub_piv)-len(cdhit_sub_piv_sub)} similar neighborhoods")
-        return list(cdhit_sub_piv_sub.index)
+        if len(dist_matrix) == 1: # don't cluster with only one neighborhood
+            return list(self.cdhit_sub_piv.index)
+        if threshold == 0: # for speed
+            return list(self.cdhit_sub_piv.index)
+        # picked single linkage b/c I should get the most unique/least amount of clusters, classification performance is good w/ the most unique neighborhoods
+        neighborhood_clusters = AgglomerativeClustering(n_clusters=None,distance_threshold=threshold,metric="precomputed",linkage=linkage_method).fit(dist_matrix) 
+        unique_clusters = np.unique(neighborhood_clusters.labels_)
+        rep_neighborhood_indices = []
+        for c in unique_clusters:
+            clust_inds = np.where(neighborhood_clusters.labels_==c)[0] # get indices for cluster members
+            # no need to compute centroid if the cluster is just one neighborhood
+            if clust_inds.shape[0] == 1: # if the cluster just has one member, no need to find centroid
+                rep_neighborhood_indices.append(clust_inds[0])
+            else:
+                # want to find the centroid for clust members not whole matrix
+                # print("Clust inds with multiple members:",clust_inds)
+                dist_matrix_sub = dist_matrix[np.ix_(list(clust_inds),list(clust_inds))] # np.ix_ allows for indexing of matrices at row and col level, want centroid of clu members at row and col level
+                centroid = np.mean(dist_matrix_sub, axis=1) # get the average distances
+                distances_to_centroid = np.sum((dist_matrix_sub - centroid[:, np.newaxis]) ** 2, axis=1) # compute the euclidean distance to centroid, np.newaxis shapes centroid to allow for subtraction
+                index_closest_to_centroid = np.argmin(distances_to_centroid) # get the index closest to centroid
+                rep_neighborhood_indices.append(clust_inds[index_closest_to_centroid])
+        cdhit_sub_piv_sub = self.cdhit_sub_piv.iloc[rep_neighborhood_indices,:] # want centroid neighborhoods, subset og df for this
+        return list(cdhit_sub_piv_sub.index) # indicies are neighborhood names
 
     def to_dict(self):
         self.dist_matrix, self.unique_hits = self.create_dist_matrix()
@@ -129,8 +148,6 @@ class VF_neighborhoods:
             "noise" : self.noise,
             "entropy" : self.entropy
         }
-
-
 
 def plt_neighborhoods(neighborhood_plt_df,out,vfdb):
     #hovering over bubbles may show same type of vf but each bubble is a diff vf query

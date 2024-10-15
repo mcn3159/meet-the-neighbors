@@ -3,7 +3,6 @@ import argparse
 import re
 import dask
 import dask.bag as db
-import _pickle as cPickle
 
 from process_gffs import gff2pandas
 from process_gffs import get_protseq_frmFasta
@@ -42,7 +41,7 @@ def read_search_tsv(**kwargs):
 
 def get_neigborhood(mmseqs_group,logger,args):
     # condition: What if the same protein appears twice in a genome, but has different neighborhoods? They should have the same query
-    gff = args.genomes+'/'+mmseqs_group[1].tset.iloc[0].split('protein.faa')[0]+'genomic.gff'
+    gff = args.genomes+mmseqs_group[1].tset.iloc[0].split('protein.faa')[0]+'genomic.gff'
     gff_df = gff2pandas(gff)
     vf_centers = gff_df[gff_df['protein_id'].isin(list(mmseqs_group[1].target))] # maybe i dont need the list command
     #print(f"{len(vf_centers)} hits found in {gff.split('/')[-1]}")
@@ -64,55 +63,27 @@ def get_neigborhood(mmseqs_group,logger,args):
 
         if len(neighborhood_df) < args.min_prots: #neighborhood centers could be near a contig break causing really small neighborhoods, which isnt helpful info
             if report < max_neighbors_report:
-                logger.warning(f"VF Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are less than {args.min_prots} proteins") #maybe I should output this type of info to a text file
+                logger.warning(f"Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are less than {args.min_prots} proteins") #maybe I should output this type of info to a text file
                 report +=1
             continue
         if len(neighborhood_df) > args.max_prots:
             if report < max_neighbors_report:
-                logger.warning(f"!!! VF Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are more than {args.max_prots} proteins !!!")
+                logger.warning(f"Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are more than {args.max_prots} proteins")
                 report +=1
             continue
         neighborhoods.append(neighborhood_df)
     return neighborhoods
 
-def run_fasta_from_neighborhood(logger,dir_for_fasta,neighborhood,**kwargs):
+def run_fasta_from_neighborhood(logger,args,dir_for_fasta,neighborhood,**kwargs):
     # Create protein fasta from neighborhoods
     #modify this func to output fastas in a separate directory
-    test = kwargs.get("test",None)
     partitions = kwargs.get("threads",4)
     out_folder = kwargs.get("out_folder","") # the alternative is blank so that the outdir is the current working directory
     fasta_per_neighborhood = kwargs.get("fasta_per_neighborhood",None)
-    if test:
-        file = open(test,"rb")
-        neighborhood = cPickle.load(file)
-        file.close()
-        print("!!!Neighborhoods loaded from pickle!!!")
-        neighborhood = db.from_sequence(neighborhood,npartitions=partitions)
 
-    seq_recs = db.map(get_protseq_frmFasta,logger,dir_for_fasta,neighborhood,fasta_per_neighborhood=fasta_per_neighborhood)
+    seq_recs = db.map(get_protseq_frmFasta,logger,args,dir_for_fasta,neighborhood,fasta_per_neighborhood=fasta_per_neighborhood)
     seq_recs.flatten().repartition(partitions).to_textfiles(f"{out_folder}combined_fasta_partition*.faa")
     return
-
-def run():
-    if __name__ == "__main__":
-        parser = argparse.ArgumentParser(description="full dir of .sh file calling mmseqs")
-        parser.add_argument("--genomes", type=str, required=True, default=None, help="Give path to folder w/ gffs")
-        parser.add_argument("--threads", type=int,default=4, help="Number of threads")
-        parser.add_argument("--out", type=str, required=True, default=None, help="Output directory")
-        parser.add_argument("--test_fastas", type=str, required=False, default=None, help="Run with test fastas?")
-        parser.add_argument("--fasta_per_neighborhood", required=False, type=str, default=None, help="To get one fasta per neighborhood")
-        parser.add_argument("--frm_vfdb",required=False,action="store_true",help="Indicate if search queries are solely from vfdb")
-        parser.add_argument("--mmseqs_search_res",required=False,type=str,help="If not using a vfdb search, input custom mmseqs search")
-        args = parser.parse_args()
-
-        partitions = args.threads
-        #col_headers,mmseqs_tsv = extract_string_from_sh(args.mmseqs_sh) hard coded these params, since they shouldnt be changing
-        mmseqs_grp_db = read_mmseqs_tsv(vfdb=args.frm_vfdb,input_mmseqs=args.mmseqs_search_res)
-        neighborhood_db = db.map(get_neigborhood,mmseqs_grp_db,args.genomes,10000)
-        neighborhood_db = neighborhood_db.flatten()
-        run_fasta_from_neighborhood(dir_for_fasta=args.genomes,neighborhood=neighborhood_db,
-                                    fasta_per_neighborhood=args.fasta_per_neighborhood,out_folder=args.out,test=args.test_fastas)
-        return
         
 #call gffpandas, load in gff df for group, subset for vf ids, loop thru that subset to return neighborhoods, to return neighborhood...
 #group df by strand and contig as call in iteration for vf_id subset, then use code to get matching_rows variable found in process_gffs
