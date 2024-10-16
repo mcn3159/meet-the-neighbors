@@ -56,6 +56,22 @@ def get_parser():
     comp_neighbors.add_argument('--name2',type=str,required=True,help="Name to give neighborhood2")
     comp_neighbors.add_argument('--out','-o',type=str,default='',required=False,help="Output directory")
 
+    chop_genome = subparsers.add_parser("chop-genome",help="Chop up genome(s) into neighborhoods")
+    chop_genome.add_argument("--genomes","-g", type=str, required=True, help="Give path to folder w/ proteins and gffs")
+    chop_genome.add_argument("--red_olp",required=False,action="store_true",help="Reduce amount of overlapping neighborhoods. Default 10kb.")
+    chop_genome.add_argument("--olp_window",required=False,type=int,default=10000,help="Change allowable overlap between neighborhoods.")
+    chop_genome.add_argument("--neighborhood_size","-ns",type=int, required=False, default=20000, help="Size in bp of neighborhood to extract. 10kb less than start, and 10kb above end of center DNA seq")
+    chop_genome.add_argument("--threads", type=int,default=4, help="Number of threads")
+    chop_genome.add_argument("--min_prots","-mip",type=int, required=False, default=3, help="Minimum number of proteins in neighborhood")
+    chop_genome.add_argument("--max_prots","-map",type=int, required=False, default=30, help="Maximum number of proteins in neighborhood")
+
+    # haven't decided whether or not I want add a functionality that clusters all the protein with the genome before sending to glm input, would potentially be a big speed up
+
+    # chop_genome.add_argument("--cluster",type="store_true", required=False, default=30, help="Cluster neighborhoods from genomes")
+    # chop_genome.add_argument("--seq_id","-s", type=float, required=False, default=0.9, help="Sequence identity for mmseqs search in genomes")
+    # chop_genome.add_argument("--cov","-c", type=float, required=False, default=0.9, help="Sequence coverage for mmseqs search in genomes")
+    chop_genome.add_argument('--out','-o',type=str,default='',required=True,help="Output directory")
+
     compute_umap = subparsers.add_parser("compute_umap",help="Compute umap from glm_outputs")
     compute_umap.add_argument("--glm_in",type=str,required=False,default="glm_inputs",help="Give directory containing inputs used to generate glm embbeds")
     compute_umap.add_argument("--glm_out",type=str,required=True,help="Give directory containing glm embeddings")
@@ -125,7 +141,7 @@ def run(parser):
                 logger.debug("Pulling neighborhoods...")
                 mmseqs_grp_db,mmseqs_search = n.read_search_tsv(vfdb=args.from_vfdb,input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
                 logger.info(f"Number of query proteins with hits: {len(set(mmseqs_search['query']))}")
-                neighborhood_db = db.map(n.get_neigborhood,mmseqs_grp_db,logger,args)
+                neighborhood_db = db.map(n.get_neigborhood,logger,args,mmseqs_groups = mmseqs_grp_db,head_on=args.head_on)
                 neighborhood_db = neighborhood_db.flatten()
                 n.run_fasta_from_neighborhood(logger,args,dir_for_fasta=args.genomes,neighborhood=neighborhood_db,
                                             fasta_per_uniq_neighborhood=args.fasta_per_neighborhood,out_folder=args.out,threads=args.threads)
@@ -224,7 +240,7 @@ def run(parser):
                     neighborhoods_to_subset_for = sum([mmseqs_groups[q] for q in chunk],[])
                     mmseqs_clust_sub = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(neighborhoods_to_subset_for)]
                     db.map(glm.get_glm_input,query=db.from_sequence(chunk,npartitions=args.threads),
-                        uniq_neighborhoods_d=uniq_neighborhoods_d,neighborhood_res=neighborhood_plt_df,mmseqs_clust=mmseqs_clust_sub,glm_input_dir=glm_input_out,logger=logger,args=args).persist()
+                        uniq_neighborhoods_d=uniq_neighborhoods_d,neighborhood_res=neighborhood_plt_df,mmseqs_clust=mmseqs_clust_sub,glm_input_dir=glm_input_out,vfdb=args.vfdb,logger=logger,args=args).persist()
                     
         elif args.plt_from_saved:
             neighborhood_plt_df = pd.read_csv(args.plt_from_saved,sep='\t')
@@ -242,6 +258,48 @@ def run(parser):
         neighborhood1,neighborhood2 = pd.read_csv(args.neighborhood1,sep='\t'),pd.read_csv(args.neighborhood2,sep='\t')
         c.compare_neighborhood_entropy(neighborhood1,neighborhood2,label1=args.name1,label2=args.name2,out=args.out)
         c.compare_uniqhits_trends(neighborhood1,neighborhood2,label1=args.name1,label2=args.name2,out=args.out,write_table=True)
+    
+    if args.subcommand == "chop-genome":
+        logger = get_logger(args.subcommand,args.out)
+        logger.debug("Chopping up some genomes...")
+        dirs_l = check_dirs(args.genomes,args.out)
+        args.genomes,args.out = dirs_l[0],dirs_l[1]
+
+        genome_queries = [genome.split('/')[-1].split('.gff')[0] for genome in glob.glob(args.genomes + '*') if '.gff' in genome]
+        logger.debug(f"All genome names to get neighborhoods from:\n{genome_queries}")
+
+        neighborhood_db = db.map(n.get_neigborhood,logger,args,genome_query = db.from_sequence(genome_queries,npartitions=args.threads))
+        neighborhood_db = neighborhood_db.flatten()
+        n.run_fasta_from_neighborhood(logger,args,dir_for_fasta=args.genomes,neighborhood=neighborhood_db,
+                                      out_folder=args.out,threads=args.threads)
+        
+        # grab all the proteins found from all neighborhoods, to then send to a dataframe with neighborhood id info
+        combinedfastas = glob.glob(f"{args.out}combined_fasta_partition*")
+        allids = [rec.id for fasta in combinedfastas for rec in glm.SeqIO.parse(fasta,"fasta")]
+
+        # simulate an mmseqs clustering df output without actually clustering proteins, so that written functions work
+        mmseqs_clust = pd.DataFrame([allids,allids]).T
+        mmseqs_clust.columns = ['rep','locus_tag'] 
+        mmseqs_clust = pn.prep_cluster_tsv(mmseqs_clust,logger)
+
+        # b/c we didnt do an initial search all VF centers are the queries for glm input purposes
+        mmseqs_clust['query'] = mmseqs_clust['VF_center'].copy() 
+
+        glm_input_out = f"{args.out}/glm_inputs/"
+        subprocess.run(f"mkdir {glm_input_out}",shell=True) # should return an error if the path already exists, don't want to make duplicates
+        
+        
+        singular_combinedfasta = f"{args.out}/combined.fasta"
+        with open(singular_combinedfasta,"w") as outfile:
+            for fasta in combinedfastas:
+                records = glm.SeqIO.parse(fasta, "fasta")
+                glm.SeqIO.write(records, outfile, "fasta")
+        logger.debug(f"Combined fastas into {singular_combinedfasta}")
+
+
+        # create tsvs for glm inputs, one tsv per protein
+        db.map(glm.get_glm_input,query=db.from_sequence(list(set(mmseqs_clust['query'])),npartitions=args.threads),
+               mmseqs_clust=mmseqs_clust,combinedfasta=singular_combinedfasta,glm_input_dir=glm_input_out,logger=logger,args=args).persist()
 
     if args.subcommand == "compute_umap": # gotta change the functions used for this
         logger = get_logger(args.subcommand,args.out)

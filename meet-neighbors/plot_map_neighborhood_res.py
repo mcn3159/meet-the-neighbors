@@ -15,7 +15,12 @@ import dask.dataframe as dd
 def prep_cluster_tsv(mmseqs_res_dir,logger):
     #run for mmseqs clustered results
     #example res: '/Users/mn3159/bigpurple/data/pirontilab/Students/Madu/bigdreams_dl/neighborhood_call/neighbors_rand5k/neighbors_rand5k_clust_res.tsv'
-    mmseqs = dd.read_csv(mmseqs_res_dir,sep='\t',names=['rep','locus_tag'])
+
+    # if statement here is to allow this function to be able to handle an already read in dataframe
+    if isinstance(mmseqs_res_dir,str):
+        mmseqs = dd.read_csv(mmseqs_res_dir,sep='\t',names=['rep','locus_tag'])
+    else:
+        mmseqs = mmseqs_res_dir.copy() 
     
 
     mmseqs['VF_center'],mmseqs['gff'],mmseqs['seq_id'],mmseqs['locus_range'],mmseqs['start'], mmseqs['strand'] = mmseqs['locus_tag'].str.split('!!!').str[1],\
@@ -26,9 +31,11 @@ def prep_cluster_tsv(mmseqs_res_dir,logger):
                                                                                mmseqs['locus_tag'].str.split('!!!').str[6]
     mmseqs['neighborhood_name'] = mmseqs['VF_center'] + '!!!' + mmseqs['gff'] + '!!!' + mmseqs['seq_id'] + '!!!' + mmseqs['locus_range'] #VF_center in non_vf calls are simply just the query hits
     
-    mmseqs = mmseqs.compute()
+    if isinstance(mmseqs_res_dir,str):
+        mmseqs = mmseqs.compute()
     cluster_names = {rep:f"Cluster_{i}" for i,rep in enumerate(set(list(mmseqs.rep)))} #can't list and loop mmseqs col with dask, so I have to compute first
     mmseqs['cluster'] = mmseqs['rep'].map(cluster_names)
+    mmseqs['prot_gffname'] = mmseqs['locus_tag'].str.split('!!!').str[0] + '!!!' + mmseqs['gff']
 
     logger.info(f"Size of mmseqs cluster results: {mmseqs.shape}")
     return mmseqs
@@ -36,7 +43,7 @@ def prep_cluster_tsv(mmseqs_res_dir,logger):
 def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb,logger):
     # map query search hits to each target neighborhood in the cluster df
     # what if the same protein fasta has multiple proteins with the same name
-    prepped_mmseqs_clust['prot_gffname'] = prepped_mmseqs_clust['locus_tag'].str.split('!!!').str[0] + '!!!' + prepped_mmseqs_clust['gff']
+    
     mmseqs_search['gff_name'] = mmseqs_search.tset.str.split('_protein.faa').str[0]
     mmseqs_search['prot_gffname'] = mmseqs_search['target'] + '!!!' + mmseqs_search['gff_name']
     mmseqs_search.drop_duplicates(subset=['prot_gffname'],inplace=True) # to reduce mmseqs_clust shape explosion

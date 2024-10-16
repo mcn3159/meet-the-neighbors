@@ -6,6 +6,7 @@ from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 from pathlib import Path
 import traceback
+import os
 
 def first_decorator(func):
     def wrapper(*args, **kwarg):
@@ -59,11 +60,22 @@ def get_protseq_frmFasta(logger,args,dir_for_fastas,neighborhood,fasta_per_neigh
     try:
         neighborhood_name = f'{neighborhood.iloc[0].VF_center}!!!{neighborhood.iloc[0].gff_name}!!!{neighborhood.iloc[0].seq_id}!!!{neighborhood.iloc[0].start}-{neighborhood.iloc[-1].end}'
         fasta_dir = dir_for_fastas+neighborhood.iloc[0].gff_name+'_protein.faa'
-        fasta = SeqIO.parse(fasta_dir,'fasta')
-        rec = list(filter(lambda x: x.id in list(neighborhood.protein_id),fasta)) # subset originial fasta for ids in neighborhood
+
+        # if statement here is quick fix to make this function compatible with chop genome
+        if not os.path.isfile(fasta_dir):
+            fasta_dir = dir_for_fastas+neighborhood.iloc[0].gff_name+'.faa'
+            if not os.path.isfile(fasta_dir):
+                fasta_dir = dir_for_fastas+neighborhood.iloc[0].gff_name+'.fasta'
+            rec = [SeqRecord(rec.seq,id=rec.id.split('|')[-1],description=rec.description) 
+                   for rec in SeqIO.parse(fasta_dir,"fasta") if rec.id.split('|')[-1] in list(neighborhood.protein_id)] # ids in chopped genomes (made from prokka) are a bit diff than what is found in refseq
+   
+        else:
+            fasta = SeqIO.parse(fasta_dir,'fasta')
+            rec = list(filter(lambda x: x.id in list(neighborhood.protein_id),fasta)) # subset originial fasta for ids in neighborhood
+
+        
         # remove list in front of filter, in line above
         if len(rec) < args.min_prots or len(rec) > args.max_prots:
-            #print("working")
             # some proteins may not be found during filter() in .faa, so remove neighborhood if they go against params
             return []
         # protein ids need this info for glm input and for later processing
