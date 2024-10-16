@@ -1,11 +1,14 @@
-import pandas as pd
+# import pandas as pd
 import argparse
 import re
 import dask
 import dask.bag as db
+import os
+import glob
 
-from process_gffs import gff2pandas
-from process_gffs import get_protseq_frmFasta
+# from process_gffs import gff2pandas
+# from process_gffs import get_protseq_frmFasta
+import process_gffs as pg
 
 def read_search_tsv(**kwargs):
     #read in mmseqs_tsv
@@ -39,11 +42,39 @@ def read_search_tsv(**kwargs):
     return mmseqs_grp_db,mmseqs
 
 
-def get_neigborhood(mmseqs_group,logger,args):
+def get_neigborhood(logger,args,**kwargs):
+    # this function gets neighborhoods of proteins based on position denoted in gff_df, filters out too big and too small neighborhoods
     # condition: What if the same protein appears twice in a genome, but has different neighborhoods? They should have the same query
-    gff = args.genomes+mmseqs_group[1].tset.iloc[0].split('protein.faa')[0]+'genomic.gff'
-    gff_df = gff2pandas(gff)
-    vf_centers = gff_df[gff_df['protein_id'].isin(list(mmseqs_group[1].target))] # maybe i dont need the list command
+
+    mmseqs_group = kwargs.get("mmseqs_groups",None)
+    genome_query = kwargs.get("genome_query",None)
+    args.head_on = kwargs.get("head_on",None) # to be compatible with chop genome
+
+    if mmseqs_group:  
+        gff = args.genomes + mmseqs_group[1].tset.iloc[0].split('protein.faa')[0] + 'genomic.gff'
+        gff_df = pg.gff2pandas(gff)
+        protein_ids = list(mmseqs_group[1].target)
+    
+    if genome_query:
+        gff = args.genomes + genome_query + '.gff'
+        gff_df = pg.gff2pandas(gff)
+        gff_df['protein_id'] = gff_df['protein_id'].str.split(':').str[-1] # remove weird characters in protein id
+
+        # check that we have a protein file with an appropriate suffix
+        protein_file = gff.split('.gff')[0] + ".faa"
+        if not os.path.isfile(protein_file):
+            protein_file = gff.split('.gff')[0] + "fasta"
+            assert os.path.isfile(protein_file), f"Protein file for {genome_query} with .faa or .fasta suffix not found"
+
+        # get list of protein ids to then use on gff,subset protein id to match what's in gff_df
+        protein_ids = set([rec.id.split('|')[-1] for rec in pg.SeqIO.parse(protein_file,"fasta")]) 
+
+    # subset gff for protein centers that we're interested in
+    logger.warning(f"Before size of gffdf: {gff_df.shape}")
+    vf_centers = gff_df[gff_df['protein_id'].isin(protein_ids)]
+    logger.warning(f"After size of gffdf: {vf_centers.shape}")
+    logger.debug(f"Total number of proteins to extract neighborhoods from {genome_query}: {len(vf_centers)}")
+
     #print(f"{len(vf_centers)} hits found in {gff.split('/')[-1]}")
     window = args.neighborhood_size/2
     neighborhoods = []
@@ -59,7 +90,7 @@ def get_neigborhood(mmseqs_group,logger,args):
             (neighborhood_df['start'] >= row.start - window) &
             (neighborhood_df['end'] <= row.end + window)]
         neighborhood_df['VF_center'] = row.protein_id
-        neighborhood_df['gff_name'] = gff.split('/')[-1].split('_genomic.gff')[0]
+        neighborhood_df['gff_name'] = gff.split('/')[-1].split('_genomic.gff')[0].split('.gff')[0] # for compatibility with chop_genomes
 
         if len(neighborhood_df) < args.min_prots: #neighborhood centers could be near a contig break causing really small neighborhoods, which isnt helpful info
             if report < max_neighbors_report:
@@ -81,7 +112,7 @@ def run_fasta_from_neighborhood(logger,args,dir_for_fasta,neighborhood,**kwargs)
     out_folder = kwargs.get("out_folder","") # the alternative is blank so that the outdir is the current working directory
     fasta_per_neighborhood = kwargs.get("fasta_per_neighborhood",None)
 
-    seq_recs = db.map(get_protseq_frmFasta,logger,args,dir_for_fasta,neighborhood,fasta_per_neighborhood=fasta_per_neighborhood)
+    seq_recs = db.map(pg.get_protseq_frmFasta,logger,args,dir_for_fasta,neighborhood,fasta_per_neighborhood=fasta_per_neighborhood)
     seq_recs.flatten().repartition(partitions).to_textfiles(f"{out_folder}combined_fasta_partition*.faa")
     return
         
