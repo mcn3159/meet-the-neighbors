@@ -13,10 +13,10 @@ def get_glm_input(**kwargs):
     neighborhood_res = kwargs.get("neighborhood_res",None)
     mmseqs_clust = kwargs.get("mmseqs_clust",None)
     glm_input_dir = kwargs.get("glm_input_dir",None)
-    combinedfasta = kwargs.get("combinedfasta", f"{args.out}combined_fastas_clust_rep.fasta")
     vfdb = kwargs.get("vfdb",None) # here for compatibility with chop_genome
     logger = kwargs.get("logger",None)
     args = kwargs.get("args",None)
+    combinedfasta_ref = kwargs.get("combinedfasta", f"{args.out}combined_fastas_clust_rep.fasta") # need to be after args object retrieval
 
     pd.options.mode.chained_assignment = None
     neighborhood_grp = set(mmseqs_clust['neighborhood_name'])
@@ -61,7 +61,7 @@ def get_glm_input(**kwargs):
     df_name = query
     df.to_csv(f"{args.out}{glm_input_dir}/{df_name}.tsv",sep='\t',header=False,mode="x")
 
-    fasta = SeqIO.parse(combinedfasta,"fasta") 
+    fasta = SeqIO.parse(combinedfasta_ref,"fasta") 
     fasta = filter(lambda x: x.id in list(mmseqs_clust.rep),fasta)
     with open(f"{args.out}{glm_input_dir}/{df_name}.fasta","x") as handle: #tsv and fasta files should have the same name
         SeqIO.write(fasta, handle, "fasta")

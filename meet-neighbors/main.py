@@ -285,8 +285,8 @@ def run(parser):
         # b/c we didnt do an initial search all VF centers are the queries for glm input purposes
         mmseqs_clust['query'] = mmseqs_clust['VF_center'].copy() 
 
-        glm_input_out = f"{args.out}/glm_inputs/"
-        subprocess.run(f"mkdir {glm_input_out}",shell=True) # should return an error if the path already exists, don't want to make duplicates
+        glm_input_out = "glm_inputs"
+        subprocess.run(f"mkdir {args.out}{glm_input_out}/",shell=True) # should return an error if the path already exists, don't want to make duplicates
         
         
         singular_combinedfasta = f"{args.out}/combined.fasta"
