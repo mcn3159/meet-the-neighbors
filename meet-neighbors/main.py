@@ -240,7 +240,7 @@ def run(parser):
                     neighborhoods_to_subset_for = sum([mmseqs_groups[q] for q in chunk],[])
                     mmseqs_clust_sub = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(neighborhoods_to_subset_for)]
                     db.map(glm.get_glm_input,query=db.from_sequence(chunk,npartitions=args.threads),
-                        uniq_neighborhoods_d=uniq_neighborhoods_d,neighborhood_res=neighborhood_plt_df,mmseqs_clust=mmseqs_clust_sub,glm_input_dir=glm_input_out,vfdb=args.vfdb,logger=logger,args=args).persist()
+                        uniq_neighborhoods_d=uniq_neighborhoods_d,neighborhood_res=neighborhood_plt_df,mmseqs_clust=mmseqs_clust_sub,glm_input_dir=glm_input_out,vfdb=args.from_vfdb,logger=logger,args=args).persist()
                     
         elif args.plt_from_saved:
             neighborhood_plt_df = pd.read_csv(args.plt_from_saved,sep='\t')
@@ -275,12 +275,20 @@ def run(parser):
         
         # grab all the proteins found from all neighborhoods, to then send to a dataframe with neighborhood id info
         combinedfastas = glob.glob(f"{args.out}combined_fasta_partition*")
-        allids = [rec.id for fasta in combinedfastas for rec in glm.SeqIO.parse(fasta,"fasta")]
+        singular_combinedfasta = f"{args.out}combined.fasta"
+        with open(singular_combinedfasta,"w") as outfile:
+            for fasta in combinedfastas:
+                records = glm.SeqIO.parse(fasta, "fasta")
+                glm.SeqIO.write(records, outfile, "fasta")
+
+        # i think its fasta to open the singular combined fasta and loop once, then looping through the records of each partition, didnt test this tho!
+        allids = [rec.id for rec in glm.SeqIO.parse(singular_combinedfasta,"fasta")]
 
         # simulate an mmseqs clustering df output without actually clustering proteins, so that written functions work
         mmseqs_clust = pd.DataFrame([allids,allids]).T
         mmseqs_clust.columns = ['rep','locus_tag'] 
         mmseqs_clust = pn.prep_cluster_tsv(mmseqs_clust,logger)
+        logger.debug(f"Total number of neighborhoods: {len(mmseqs_clust['neighborhood_name'])}")
 
         # b/c we didnt do an initial search all VF centers are the queries for glm input purposes
         mmseqs_clust['query'] = mmseqs_clust['VF_center'].copy() 
@@ -288,8 +296,7 @@ def run(parser):
         glm_input_out = "glm_inputs"
         subprocess.run(f"mkdir {args.out}{glm_input_out}/",shell=True) # should return an error if the path already exists, don't want to make duplicates
         
-        
-        singular_combinedfasta = f"{args.out}/combined.fasta"
+        singular_combinedfasta = f"{args.out}combined.fasta"
         with open(singular_combinedfasta,"w") as outfile:
             for fasta in combinedfastas:
                 records = glm.SeqIO.parse(fasta, "fasta")
@@ -299,7 +306,7 @@ def run(parser):
 
         # create tsvs for glm inputs, one tsv per protein
         db.map(glm.get_glm_input,query=db.from_sequence(list(set(mmseqs_clust['query'])),npartitions=args.threads),
-               mmseqs_clust=mmseqs_clust,combinedfasta=singular_combinedfasta,glm_input_dir=glm_input_out,logger=logger,args=args).persist()
+               mmseqs_clust=mmseqs_clust,combinedfasta=singular_combinedfasta,glm_input_dir=glm_input_out,logger=logger,args=args).compute()
 
     if args.subcommand == "compute_umap": # gotta change the functions used for this
         logger = get_logger(args.subcommand,args.out)

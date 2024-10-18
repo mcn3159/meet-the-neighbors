@@ -19,7 +19,6 @@ def get_glm_input(**kwargs):
     combinedfasta_ref = kwargs.get("combinedfasta", f"{args.out}combined_fastas_clust_rep.fasta") # need to be after args object retrieval
 
     pd.options.mode.chained_assignment = None
-    neighborhood_grp = set(mmseqs_clust['neighborhood_name'])
 
     # only keep queries that made it through filtering in main.py to reduce computations   
     if uniq_neighborhoods_d: # here for compatiblity with chop-genome, since it doesn't currently make this object
@@ -29,6 +28,10 @@ def get_glm_input(**kwargs):
         
         neighborhood_grp = uniq_neighborhoods_d[query]
         mmseqs_clust = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(neighborhood_grp)]
+    
+    else:
+        mmseqs_clust = mmseqs_clust[mmseqs_clust['query']==query]
+        neighborhood_grp = mmseqs_clust['neighborhood_name']
 
     mmseqs_clust['strand_neighborhood'] = mmseqs_clust['strand'] + mmseqs_clust['rep'] # each protein in neighborhoods will be reprented by its cluster representative
 
