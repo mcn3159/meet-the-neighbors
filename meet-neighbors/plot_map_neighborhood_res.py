@@ -12,7 +12,9 @@ import numpy as np
 from scipy.stats import entropy
 import dask.dataframe as dd
 
-def prep_cluster_tsv(mmseqs_res_dir,logger):
+# def prep_cluster_tsv(mmseqs_res_dir,logger):
+def prep_cluster_tsv(mmseqs_res_dir):
+
     #run for mmseqs clustered results
     #example res: '/Users/mn3159/bigpurple/data/pirontilab/Students/Madu/bigdreams_dl/neighborhood_call/neighbors_rand5k/neighbors_rand5k_clust_res.tsv'
 
@@ -37,7 +39,7 @@ def prep_cluster_tsv(mmseqs_res_dir,logger):
     mmseqs['cluster'] = mmseqs['rep'].map(cluster_names)
     mmseqs['prot_gffname'] = mmseqs['locus_tag'].str.split('!!!').str[0] + '!!!' + mmseqs['gff']
 
-    logger.info(f"Size of mmseqs cluster results: {mmseqs.shape}")
+    print(f"Size of mmseqs cluster results: {mmseqs.shape}")
     return mmseqs
 
 def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb,logger):
