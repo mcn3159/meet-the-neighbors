@@ -79,6 +79,28 @@ def reduce_overlap(mmseqs_clust_sub,window):
     mmseqs_clust_sub_copy = mmseqs_clust_sub_copy[mmseqs_clust_sub_copy['neighborhood_start'].isin(list(similar_range_neighbors.keys()))]
     return mmseqs_clust_sub_copy
 
+def select_multivf_neighborhoods(mmseqs_clust,loose_vf_search,logger):
+    # get a list of neighborhoods containing more than one VF based off of an additional mmseqs search with looser search parameters than the previous one
+
+    mmseqs_clust_sub =  mmseqs_clust.dropna(subset=['query'])
+
+    og_hits = dict(zip(mmseqs_clust_sub['locus_tag'],mmseqs_clust_sub['query']))
+
+    # target are neighborhood lcs, queries are VFs
+    loose_vf_search = loose_vf_search[~loose_vf_search['target'].isin(og_hits.keys())] # can remove the locus tags in which we already know is a query based on an earlier .9 seqid and cov search 
+    lc_query_map = dict(zip(loose_vf_search['target'],loose_vf_search['query'])) # this dictionary will be used to map additional locus tags (target) that had some sort of seq similarity to a vf (query)
+
+    og_hits.update(lc_query_map) # combine new locus tag hits to a VF with the originals
+    mmseqs_clust['loose_query'] = mmseqs_clust['locus_tag'].map(og_hits) # new column gives an idea of what neighborhoods have multiple VFs mapped to it
+
+    print(mmseqs_clust.dropna(subset=['loose_query']).shape)
+    print(mmseqs_clust.dropna(subset=['loose_query']).head())
+    query_nn = mmseqs_clust.dropna(subset=['loose_query']).groupby('neighborhood_name')['loose_query'].apply(list).to_dict()
+    multi_query_nn = [nn for nn in query_nn if len(query_nn[nn])>1] # get neighborhood names that contain multiple VFs for future reference
+
+    logger.debug(f"Number of neighborhoods with mutiple VFs found: {len(multi_query_nn)} out of {len(query_nn)} total neighborhoods")
+    return mmseqs_clust,multi_query_nn
+
 def get_query_neighborhood_groups(mmseqs_clust,cluster_neighborhoods_by):
     # may cause the loss of some queries, which may have been filtered out in red_olp
     # func results in a dictionary where key is prot query and values are rows in neighborhoods belonging to THAT query

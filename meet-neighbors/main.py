@@ -47,6 +47,9 @@ def get_parser():
     extract_neighbors.add_argument("--max_prots","-map",type=int, required=False, default=30, help="Maximum number of proteins in neighborhood")
     extract_neighbors.add_argument("--red_olp",required=False,action="store_true",help="Reduce amount of overlapping neighborhoods. Default 10kb.")
     extract_neighbors.add_argument("--olp_window",required=False,type=int,default=10000,help="Change allowable overlap between neighborhoods.")
+    extract_neighbors.add_argument("--multi_vf_nn",required=False,action="store_true",help="Filter neighborhoods found for only those with multiple query hits based on a second mmseqs search")
+    extract_neighbors.add_argument("--mvn_seq_id","-mvn_s", type=float, required=False, default=0.3, help="Sequence identity for 2nd mmseqs search in genomes")
+    extract_neighbors.add_argument("--mvn_cov","-mvn_c", type=float, required=False, default=0.8, help="Sequence coverage for 2nd mmseqs search in genomes")
     extract_neighbors.add_argument("-ho","--head_on",required=False,action="store_true",help="Extract neighborhoods with genes in opposite orientations")
 
     comp_neighbors = subparsers.add_parser("compare_neighborhoods",help="Compare multiple neighborhood tsvs")
@@ -83,6 +86,12 @@ def get_parser():
     compute_umap.add_argument('--label','-l',type=str,default='vf_category',required=False,help="Column label to color umap points by. Current options are vf_category,vf_name,vf_subcategory,vfdb_species,vfdb_genus,vf_id")
     compute_umap.add_argument('--width',type=int,default=1000,required=False,help="Width of umap plot")
     compute_umap.add_argument('--legend',action="store_true",required=False,help="Show legend on umap plot")
+
+    predictvf = subparsers.add_parser("predictvf",help="Predict functional categories of VFs and structures")
+    predictvf.add_argument("--glm_embeds",type=str,required=True,help="tsv file containing glm embeddings")
+    predictvf.add_argument("--structs",type=str,required=False,help="Directory containing query protein structures")
+    predictvf.add_argument("--out","-o",type=str,help="Output directory")
+
     return parser
 
 def check_dirs(*args):
@@ -159,19 +168,41 @@ def run(parser):
                 mmseqs_search = dd.from_pandas(mmseqs_search,npartitions=args.threads) # make it a dask dataframe there instad of in read_search_tsv() b/c its much easier to run
                 logger.debug("Reading in dataframe of clustered proteins from neighborhoods...")
                 mmseqs_clust = pn.prep_cluster_tsv(f"{args.out}combined_fastas_clust_res.tsv",logger)
+                logger.debug(f"Total number of neighborhoods found: {len(set(mmseqs_clust['neighborhood_name']))}")
+
                 if args.red_olp:
-                    # reduce the number of neighborhoods that overalp in terms of location
+                    # reduce the number of neighborhoods that overalp in terms of location on the same chromosome
                     mmseqs_groups = list(mmseqs_clust.groupby(['gff', 'strand', 'seq_id'])) #cant groupby on its own with dask
                     mmseqs_groups = db.from_sequence(mmseqs_groups,npartitions=args.threads)
                     mmseqs_clust = db.map(pn.reduce_overlap,mmseqs_groups,window=args.olp_window)
                     del mmseqs_groups # save ram
                     mmseqs_clust = pd.concat(mmseqs_clust.compute())
-                    logger.debug(f"Clustering df size after removing overlapping neighborhoods: {mmseqs_clust.shape}")
+                    logger.debug(f"Clustering df size after reducing number of overlapping neighborhoods: {mmseqs_clust.shape}")
+                    logger.debug(f"Total number of neighborhoods after reducing number of overlapping neighborhoods: {len(set(mmseqs_clust['neighborhood_name']))}")
                 del mmseqs_grp_db
 
                 mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search,args.from_vfdb,logger)
+
+                if args.multi_vf_nn: 
+                    # motivated by getting neighborhoods containing multiple VFs
+                    mmseqs_clust = mmseqs_clust.compute()
+
+                    if (not os.path.isfile(f"{args.out}multi_vf_search.tsv") and args.resume) or not (args.resume): # b/c mmseqs throws an error if the multi_vf_search db already exists
+                        logger.debug("Searching additional queries in neighborhoods...")
+
+                        subprocess.run(f"mmseqs search {args.out}queryDB {args.out}combined_fastas_db {args.out}multi_vf_search {args.out}tmp_search2 --min-seq-id {args.mvn_seq_id} --cov-mode 0 -c {args.mvn_cov} -v 2 --split-memory-limit {int(args.mem * (2/3))}G --threads {args.threads}  --alignment-mode 3 --start-sens 1 --sens-steps 3 -s 7"
+                ,shell=True,check=True)
+                        subprocess.run(["mmseqs", "convertalis", f"{args.out}queryDB", f"{args.out}combined_fastas_db", f"{args.out}multi_vf_search", f"{args.out}multi_vf_search.tsv", "--format-output", "query,target,evalue,pident,qcov,fident,alnlen,qheader,theader,tset,tsetid"] 
+                ,check=True)
+                    
+                    multivf_mmseqs_grp_db,multi_vf_search = n.read_search_tsv(vfdb=args.from_vfdb,input_mmseqs=f"{args.out}multi_vf_search.tsv",threads=args.threads)
+
+                    # get a list of neighborhoods that contain multiple hits from the query fasta (great for getting neighborhoods w/ muliple VFs)
+                    mmseqs_clust,multi_query_nn = pn.select_multivf_neighborhoods(mmseqs_clust,loose_vf_search=multi_vf_search,logger=logger)
+                    mmseqs_clust = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(multi_query_nn)]
                 
                 subprocess.run(f"mkdir {args.out}clust_res_in_neighborhoods",shell=True,check=True)
+                mmseqs_clust = dd.from_pandas(mmseqs_clust,npartitions=args.threads)
                 mmseqs_clust.to_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",index=False,sep="\t")
                 mmseqs_clust = mmseqs_clust.compute()
             
@@ -240,7 +271,7 @@ def run(parser):
                     neighborhoods_to_subset_for = sum([mmseqs_groups[q] for q in chunk],[])
                     mmseqs_clust_sub = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(neighborhoods_to_subset_for)]
                     db.map(glm.get_glm_input,query=db.from_sequence(chunk,npartitions=args.threads),
-                        uniq_neighborhoods_d=uniq_neighborhoods_d,neighborhood_res=neighborhood_plt_df,mmseqs_clust=mmseqs_clust_sub,glm_input_dir=glm_input_out,vfdb=args.vfdb,logger=logger,args=args).persist()
+                        uniq_neighborhoods_d=uniq_neighborhoods_d,neighborhood_res=neighborhood_plt_df,mmseqs_clust=mmseqs_clust_sub,glm_input_dir=glm_input_out,vfdb=args.from_vfdb,logger=logger,args=args).persist()
                     
         elif args.plt_from_saved:
             neighborhood_plt_df = pd.read_csv(args.plt_from_saved,sep='\t')
