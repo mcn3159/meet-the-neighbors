@@ -297,7 +297,7 @@ def run(parser):
         args.genomes,args.out = dirs_l[0],dirs_l[1]
 
         genome_queries = [genome.split('/')[-1].split('.gff')[0] for genome in glob.glob(args.genomes + '*') if '.gff' in genome]
-        logger.debug(f"All genome names to get neighborhoods from:\n{genome_queries}")
+        logger.debug(f"All genome names to get neighborhoods from: {genome_queries}")
 
         neighborhood_db = db.map(n.get_neigborhood,logger,args,genome_query = db.from_sequence(genome_queries,npartitions=args.threads))
         neighborhood_db = neighborhood_db.flatten()
@@ -306,31 +306,34 @@ def run(parser):
         
         # grab all the proteins found from all neighborhoods, to then send to a dataframe with neighborhood id info
         combinedfastas = glob.glob(f"{args.out}combined_fasta_partition*")
-        allids = [rec.id for fasta in combinedfastas for rec in glm.SeqIO.parse(fasta,"fasta")]
-
-        # simulate an mmseqs clustering df output without actually clustering proteins, so that written functions work
-        mmseqs_clust = pd.DataFrame([allids,allids]).T
-        mmseqs_clust.columns = ['rep','locus_tag'] 
-        mmseqs_clust = pn.prep_cluster_tsv(mmseqs_clust,logger)
-
-        # b/c we didnt do an initial search all VF centers are the queries for glm input purposes
-        mmseqs_clust['query'] = mmseqs_clust['VF_center'].copy() 
-
-        glm_input_out = f"{args.out}/glm_inputs/"
-        subprocess.run(f"mkdir {glm_input_out}",shell=True) # should return an error if the path already exists, don't want to make duplicates
-        
-        
-        singular_combinedfasta = f"{args.out}/combined.fasta"
+        singular_combinedfasta = f"{args.out}combined.fasta"
         with open(singular_combinedfasta,"w") as outfile:
             for fasta in combinedfastas:
                 records = glm.SeqIO.parse(fasta, "fasta")
                 glm.SeqIO.write(records, outfile, "fasta")
         logger.debug(f"Combined fastas into {singular_combinedfasta}")
 
+        # i think its fasta to open the singular combined fasta and loop once, then looping through the records of each partition, didnt test this tho!
+        allids = [rec.id for rec in glm.SeqIO.parse(singular_combinedfasta,"fasta")]
+
+        # simulate an mmseqs clustering df output without actually clustering proteins, so that written functions work
+        mmseqs_clust = pd.DataFrame([allids,allids]).T
+        mmseqs_clust.columns = ['rep','locus_tag'] 
+        mmseqs_clust = pn.prep_cluster_tsv(mmseqs_clust,logger)
+        logger.debug(f"Total number of queries: {len(mmseqs_clust['query'])}")
+        logger.debug(f"Total number of neighborhoods: {len(mmseqs_clust['neighborhood_name'])}")
+
+        # b/c we didnt do an initial search all VF centers are the queries for glm input purposes
+        mmseqs_clust['query'] = mmseqs_clust['VF_center'].copy() 
+        subprocess.run(f"mkdir {args.out}clust_res_in_neighborhoods",shell=True,check=True)
+        mmseqs_clust.to_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust.tsv",sep="\t",index=False)
+
+        glm_input_out = "glm_inputs"
+        subprocess.run(f"mkdir {args.out}{glm_input_out}/",shell=True) # should return an error if the path already exists, don't want to make duplicates
 
         # create tsvs for glm inputs, one tsv per protein
         db.map(glm.get_glm_input,query=db.from_sequence(list(set(mmseqs_clust['query'])),npartitions=args.threads),
-               mmseqs_clust=mmseqs_clust,combinedfasta=singular_combinedfasta,glm_input_dir=glm_input_out,logger=logger,args=args).persist()
+               mmseqs_clust=mmseqs_clust,combinedfasta=singular_combinedfasta,glm_input_dir=glm_input_out,logger=logger,args=args).compute()
 
     if args.subcommand == "compute_umap": # gotta change the functions used for this
         logger = get_logger(args.subcommand,args.out)
@@ -346,7 +349,7 @@ def run(parser):
             dirs_l = check_dirs(args.neighborhood_run,args.glm_out,args.glm_in)
             neighborhood_dir,glm_out,glm_in = dirs_l[0],dirs_l[1],dirs_l[2]
 
-        mmseqs_clust = dd.read_csv(f"{neighborhood_dir}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",sep="\t",dtype={'query': 'object'})
+        mmseqs_clust = dd.read_csv(f"{neighborhood_dir}clust_res_in_neighborhoods/mmseqs_clust*.tsv",sep="\t",dtype={'query': 'object'})
         mmseqs_clust = mmseqs_clust.compute()
 
         logger.debug(f"Grabbing gLM from {glm_out} \nGiven these inputs: {glm_in}")
