@@ -24,7 +24,7 @@ class FullyConnectedNN(nn.Module):
         return x
     
 # load the meta classifier
-def meta_classifier(nn_struct_preds,model,lb,args):
+def meta_classifier(nn_struct_preds,model,lb):
     first_feature_ind = 3
     meta_preds = model.predict_proba(nn_struct_preds.rename(columns=
                                     {col:str(i)+'_x' if '_x' in col else str(i-8)+'_y' 

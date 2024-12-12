@@ -4,20 +4,30 @@ import subprocess
 import pandas as pd
 import numpy as np
 import glob
+import pickle as pkl
 from Bio.Seq import MutableSeq
 from Bio.Seq import Seq
 from Bio import SeqIO
+import importlib.resources
+import pdb
 
 import dask
 import dask.bag as db
 import dask.dataframe as dd
 import torch
 import torch.nn.functional as F
+from transformers import RobertaConfig
+
 
 import meetneighbors.neighbors_frm_mmseqs as n
 import meetneighbors.glm_input_frm_neighbors as glm
 import meetneighbors.plot_map_neighborhood_res as pn
 import meetneighbors.predictvfs.clf_models as clf
+
+import meetneighbors.predictvfs.glm.plm_embed as plm
+import meetneighbors.predictvfs.glm.batch_data as bd
+import meetneighbors.predictvfs.glm.glm_embed as glm_e
+from meetneighbors.predictvfs.glm.gLM import *
 
 
 def pull_neighborhoodsdf(args,logger):
@@ -43,7 +53,6 @@ def pull_neighborhoodsdf(args,logger):
     mmseqs_clust = pd.DataFrame([allids,allids]).T
     mmseqs_clust.columns = ['rep','locus_tag'] 
     mmseqs_clust = pn.prep_cluster_tsv(mmseqs_clust,logger)
-    logger.debug(f"Total number of queries: {len(mmseqs_clust['query'])}")
     logger.debug(f"Total number of neighborhoods: {len(mmseqs_clust['neighborhood_name'])}")
 
     # b/c we didnt do an initial search all VF centers are the queries for glm input purposes
@@ -71,40 +80,84 @@ def get_plm_embeds(glm_inputs_path,glm_outputs_path):
     fasta_recs = checkXle(unique_records.values())
     with open(f"{glm_outputs_path}/all_glm_input_prots_reps.fasta","w") as handle:
         SeqIO.write(fasta_recs,handle,"fasta")
-    subprocess.run(f"python plm_embed.py {glm_outputs_path}/all_glm_input_prots_reps.fasta {glm_outputs_path}/all_glm_input_prots_reps.esm.embs.pkl",shell=True,check=True)
+
+    sequence_representations = plm.run_plm(f"{glm_outputs_path}/all_glm_input_prots_reps.fasta")
+    try:
+        fi = open(f"{glm_outputs_path}/all_glm_input_prots_reps.esm.embs.pkl", "wb")
+        pkl.dump(sequence_representations,fi)
+        fi.close()
+    except pkl.PicklingError:
+        print("Ran into an error when pickling plm embeddings, opening console to debug..")
+        pdb.set_trace()
     return
 
-def create_glm_embeds(f,glm_outputs_path):
+def create_glm_embeds(f,glm_outputs_path,norm_factors,PCA_LABEL,ngpus):
+    # need to incorporate pkl files from glm (norm and pca.pkl)
+    # batch_data_path = importlib.resources.path("meetneighbors.predictvfs.glm","batch_data.py")
+    glm_model = importlib.resources.path("meetneighbors.predictvfs.glm.model","glm.bin")
     res_name = f.split('/')[-1] 
     subprocess.run(f"mkdir '{glm_outputs_path}/{res_name}'",shell=True,check=True) #multiple queries with the same name?
     
-    subprocess.run(f"mkdir '{glm_outputs_path}/{res_name}/batched'",shell=True,check=True)
-    subprocess.run(f"python batch_data.py {glm_outputs_path}/all_glm_input_prots_reps.esm.embs.pkl '{f}'.tsv '{glm_outputs_path}/{res_name}/batched'",shell=True,check=True)
-    subprocess.run(f"python ../gLM/glm_embed.py -d '{glm_outputs_path}/{res_name}/batched' -m ../model/glm.bin -b 100 -o '{glm_outputs_path}/{res_name}/results'",shell=True,check=True)
+    batched_dir = f'{glm_outputs_path}/{res_name}/batched'
+    subprocess.run(f"mkdir {batched_dir}",shell=True,check=True)
+
+    # subprocess.run(f"python {batch_data_path} {glm_outputs_path}/all_glm_input_prots_reps.esm.embs.pkl '{f}'.tsv '{glm_outputs_path}/{res_name}/batched'",shell=True,check=True)
+    bd.run_batcher(f"{glm_outputs_path}/all_glm_input_prots_reps.esm.embs.pkl",f"{f}.tsv",norm_factors,PCA_LABEL,f"{glm_outputs_path}/{res_name}/batched")
+    # subprocess.run(f"python {glm_embed_path} -d '{glm_outputs_path}/{res_name}/batched' -m {glm_model} -b 100 -o '{glm_outputs_path}/{res_name}/results'",shell=True,check=True)
+    num_pred = 4
+    max_seq_length = 30 
+    num_attention_heads = 10
+    num_hidden_layers= 19
+    pos_emb = "relative_key_query"
+    pred_probs = True
+    HIDDEN_SIZE = 1280
+    EMB_DIM = 1281
+    NUM_PC_LABEL = 100
+     # populate config 
+    config = RobertaConfig(
+        max_position_embedding = max_seq_length,
+        hidden_size = HIDDEN_SIZE,
+        num_attention_heads = num_attention_heads,
+        type_vocab_size = 1,
+        tie_word_embeddings = False,
+        num_hidden_layers = num_hidden_layers,
+        num_pc = NUM_PC_LABEL, 
+        num_pred = num_pred,
+        predict_probs = pred_probs,
+        emb_dim = EMB_DIM,
+        output_attentions=True,
+        output_hidden_states=True,
+        position_embedding_type = pos_emb,
+    )
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    model = gLM(config)
+    model.load_state_dict(torch.load(glm_model, map_location=device),strict=False)
+    glm_e.run_glm_embeds(model,pkg_data_dir=batched_dir,glm_embed_output_path=f'{glm_outputs_path}/{res_name}/results',device=device,ngpus=ngpus)
     return f
 
-def get_embed_preds(embeds,model,lb,args): # might want to put lb into the argparse
+def get_embed_preds(embeds,model_weights,lb,args): # might want to put lb into the argparse
     input_dim,num_classes = 1280,len(lb.classes_)
 
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     model = clf.FullyConnectedNN(input_dim=input_dim, num_classes=num_classes).to(device)
-    model.load_state_dict(torch.load(model, weights_only=True))
+    model.load_state_dict(torch.load(model_weights))
     model.eval()
     with torch.no_grad():
         outputs = model(torch.tensor(embeds.iloc[:,1:1+1280].values.astype(np.float32)).to(device))
-        ecc_predictions = pd.DataFrame(F.softmax(outputs,dim=1))
+        ecc_predictions = pd.DataFrame(F.softmax(outputs,dim=1).detach().cpu().numpy())
             
     ecc_predictions.columns = [cat for cat in lb.classes_]
 
     ecc_predictionsdf = pd.concat([embeds['query'],embeds['neighborhood_name'],ecc_predictions],axis=1)
-    
+
+    # map annotations to predictionsdf
     prot_annots = {}
-    prot_faas = [proteome for proteome in glob.glob(args.genome+'*') if '.gff' not in proteome]
+    prot_faas = [proteome for proteome in glob.glob(args.genomes+'*') if '.gff' not in proteome]
     for fasta in prot_faas:
         prot_annots.update({rec.id.split('|')[-1]:' '.join(rec.description.split(' ')[1:]) for rec in SeqIO.parse(fasta,"fasta")})
     
     # neighborhoods couldn't be extracted for some queries b/c it didn't fit the minimum neighborhood definition requirements
-    print("Number of queries with no neighborhoods:",len(prot_annots)-len(set(embeds['query'])))
+    # logger.debug("Number of queries with no neighborhoods:",len(prot_annots)-len(set(embeds['query'])))
     
     ecc_predictionsdf['seq_annotations'] = ecc_predictionsdf['query'].map(prot_annots)
     

@@ -31,7 +31,7 @@ def get_glm_input(**kwargs):
     
     else:
         mmseqs_clust = mmseqs_clust[mmseqs_clust['query']==query]
-        neighborhood_grp = mmseqs_clust['neighborhood_name']
+        neighborhood_grp = list(mmseqs_clust['neighborhood_name'])
 
     mmseqs_clust['strand_neighborhood'] = mmseqs_clust['strand'] + mmseqs_clust['rep'] # each protein in neighborhoods will be reprented by its cluster representative
 

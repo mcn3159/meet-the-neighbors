@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot
-import plotly.express as px
-import plotly.graph_objects as go
+# import plotly.express as px
+# import plotly.graph_objects as go
 
 # Functions in this file only work to compare 2 neighborhoods, I can edit to work with multiple neighborhoods if needed
 def compare_neighborhood_entropy(*args,**kwargs):

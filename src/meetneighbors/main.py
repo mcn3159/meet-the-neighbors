@@ -98,6 +98,7 @@ def get_parser():
     predictvf = subparsers.add_parser("predictvf",help="Predict functional categories of proteins given a their gff files and resprective protein fastas")
     predictvf.add_argument("--genomes","-g", type=str, required=True, help="Give path to folder w/ proteins and gffs")
     predictvf.add_argument("--threads", type=int,default=4, help="Number of threads")
+    predictvf.add_argument("--ngpus", type=int,default=0, help="Number of gpus to use for embedding making")
     # predictvf.add_argument("--glm_embeds",type=str,required=False,help="tsv file containing glm embeddings")
     predictvf.add_argument("--foldseek_structs",type=str,required=True,help="Directory containing foldseek db of query protein structures")
     predictvf.add_argument("--out","-o",type=str,help="Output directory")
@@ -108,6 +109,7 @@ def get_parser():
     predictvf.add_argument("--neighborhood_size","-ns",type=int, required=False, default=20000, help="Size in bp of neighborhood to extract. 10kb less than start, and 10kb above end of center DNA seq")
     predictvf.add_argument("--min_prots","-mip",type=int, required=False, default=3, help="Minimum number of proteins in neighborhood")
     predictvf.add_argument("--max_prots","-map",type=int, required=False, default=30, help="Maximum number of proteins in neighborhood")
+    predictvf.add_argument("--resume","-r",required=False,action="store_true",help="Resume where program Neighbors left off. Output directory must be the same")
 
     return parser
 
@@ -354,14 +356,13 @@ def workflow(parser):
         # create tsvs for glm inputs, one tsv per protein
         db.map(glm.get_glm_input,query=db.from_sequence(list(set(mmseqs_clust['query'])),npartitions=args.threads),
                mmseqs_clust=mmseqs_clust,combinedfasta=singular_combinedfasta,glm_input_dir=glm_input_out,logger=logger,args=args).compute()
-        
-
     
     if args.subcommand == 'predictvf':
         logger = get_logger(args.subcommand,args.out)
         logger.debug("Chopping up some genomes...")
         dirs_l = check_dirs(args.genomes,args.out)
         args.genomes,args.out = dirs_l[0],dirs_l[1]
+        pkl_objs = l.load_pickle()
 
         logger.debug(f"Pulling neighborhoods from {len(glob.glob(args.genomes))/2} pairs of proteomes + gffs...")
         mmseqs_clust,singular_combinedfasta = nc.pull_neighborhoodsdf(args,logger)
@@ -370,10 +371,10 @@ def workflow(parser):
         subprocess.run(f"mkdir {args.out}{glm_input_out}/",shell=True) # should return an error if the path already exists, don't want to make duplicates
 
         # create tsvs for glm inputs, one tsv per protein
-        logger.debug(f"Collecting neighborhoods for {len(set(mmseqs_clust['query']))} proteins...")
+        logger.debug(f"Transforming collected {len(set(mmseqs_clust['query']))} proteins for input into the gLM...")
         db.map(glm.get_glm_input,query=db.from_sequence(list(set(mmseqs_clust['query'])),npartitions=args.threads),
-               mmseqs_clust=mmseqs_clust,combinedfasta=singular_combinedfasta,glm_input_dir=glm_input_out,logger=logger,args=args).compute()
-
+                mmseqs_clust=mmseqs_clust,combinedfasta=singular_combinedfasta,glm_input_dir=glm_input_out,logger=logger,args=args).compute()
+        
         glm_ouputs_out = "glm_outputs"
         subprocess.run(f"mkdir {args.out}{glm_ouputs_out}/",shell=True)
         logger.debug("Computing pLM embeddings...")
@@ -384,40 +385,42 @@ def workflow(parser):
         files = [file.split('.tsv')[0] for file in tsvs_to_getembeds if file.split('/')[-1].split('.tsv')[0] not in computed_embed_names] # make sure embed hasnt been computed already
         
         logger.debug(f"Computing gLM embeddings for: {len(files)} proteins")
-        files_db = db.from_sequence(files,npartitions=4) #I dont think npartitions matters too much here, number of parllelizes calls will be equal to # of gpus available
+
+        files_db = db.from_sequence(files,npartitions=args.threads) #I dont think npartitions matters too much here, number of parllelizes calls will be equal to # of gpus available
         
-        res_name = db.map(nc.create_glm_embeds,files_db,args.out+glm_ouputs_out)
+        res_name = db.map(nc.create_glm_embeds,files_db,args.out+glm_ouputs_out,norm_factors=pkl_objs['norm.pkl'],PCA_LABEL=pkl_objs['pca.pkl'],ngpus=args.ngpus)
         res_name = res_name.compute()
 
-        glm_res_d_vals_predf =  cu.unpack_embeddings(glm_out,glm_in,mmseqs_clust)
+        mmseqs_clust = pd.read_csv(f"{args.out}/clust_res_in_neighborhoods/mmseqs_clust.tsv",sep='\t')
+        glm_res_d_vals_predf =  cu.unpack_embeddings(args.out+glm_ouputs_out,args.out+glm_input_out,mmseqs_clust)
         embedding_df_merge = cu.get_glm_embeddf(glm_res_d_vals_predf)
+        embedding_df_merge.to_csv(f"{args.out}glm_embeds.tsv",sep="\t",index=False)
 
-        pkl_objs = l.load_pickle()
         lb = pkl_objs['labelbinarizer_vfcategories.obj']
-        nn_clf_weights = l.load_vf_functional_mappers()
+        nn_clf_weights = l.load_nn_clf_model()
         nn_preds_res = nc.get_embed_preds(embedding_df_merge,nn_clf_weights,lb=lb,args=args)
-        nn_preds_res.to_csv("neighborhood_based_predictions.tsv",sep="\t",index=False)
+        nn_preds_res.to_csv(f"{args.out}neighborhood_based_predictions.tsv",sep="\t",index=False)
 
         # pull together structure search results
         logger.debug("Foldseek search query proteins against VF and NS database...")
 
-        struct_search_raw = sc.foldseek_search(args.query_foldseekdb_path,args)
+        struct_search_raw = sc.foldseek_search(args)
         tsvs_d = l.load_vf_functional_mappers()
         vfid_mapping,vfquery_vfid = tsvs_d['VFID_mapping_specified.tsv'],tsvs_d['vfquery_to_id_tocat.tsv']
-        struct_search = sc.format_search([struct_search_raw],meta = ['q_vn'],vfquery_vfid=vfquery_vfid,vfid_mapping=vfid_mapping)
+        struct_search = sc.format_search([struct_search_raw],meta = ['q_vn'],vfquery_vfid=vfquery_vfid,vfmap_df=vfid_mapping)
         struct_search = sc.format_searchlabels(struct_search)
 
         logger.debug("Collecting best structural similarity for each functional group if exists...")
         queries_db = db.from_sequence(set(struct_search['query']),npartitions = args.threads)
         pred_raw = db.map(sc.alltopNhits_probs_threadable,queries_db,df=struct_search[['query','target','qtmscore','tvf_category']],score_metric="qtmscore",lb=lb)
         pred_raw = pred_raw.compute()
-        struct_preds_res = sc.format_strucpreds(pred_raw,lb)
+        struct_preds_res = sc.format_strucpreds(pred_raw=pred_raw,lb=lb)
         struct_preds_res.to_csv(f"{args.out}structure_based_predictions.tsv",sep="\t",index=False)
 
         logger.debug("Integrating neighborhood and structure based predictions")
         nn_struct_preds = pd.merge(nn_preds_res,struct_preds_res,on='query',how='left')
         nn_struct_preds.fillna(0.0,inplace=True) # some queries don't show up in structure search b/c no hits. Which is why there are more neighborhoods than struct hits
-        integrated_preds = clf.meta_classifier(nn_struct_preds=nn_struct_preds,model=pkl_objs['meta-LR_11142024.obj'],lb=lb,args=args)
+        integrated_preds = clf.meta_classifier(nn_struct_preds=nn_struct_preds,model=pkl_objs['meta-LR_11142024.obj'],lb=lb)
 
         if args.include_structhits:
             mmseqs_clust['true_lc'] = mmseqs_clust['locus_tag'].str.split('!!!').str[0] # b/c these are similar to names used in foldseek search

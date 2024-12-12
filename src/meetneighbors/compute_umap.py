@@ -7,10 +7,10 @@ from tqdm import tqdm
 
 
 def unpack_embeddings(glm_out_dir,glm_in_dir,mmseqs_clust): # lowkey don't need mmseqs_clust but it's here just to make sure things are working
-    glm_folders_o = [folder for folder in glob.glob(glm_out_dir+"*") if os.path.isdir(folder)]
+    glm_folders_o = [folder for folder in glob.glob(glm_out_dir+"/*") if os.path.isdir(folder)]
     glm_vf_fldrs_o = {fold.split('/')[-1]:fold for fold in glm_folders_o}
     
-    glm_folders_i = [folder for folder in glob.glob(glm_in_dir+"*.tsv")]
+    glm_folders_i = [folder for folder in glob.glob(glm_in_dir+"/*.tsv")]
     glm_vf_fldrs_i = {fold.split('/')[-1].split('.ts')[0]:fold for fold in glm_folders_i}
 
     glm_res_d_vals_predf = {}
@@ -38,7 +38,9 @@ def get_glm_embeddf(glm_res_d_vals_predf): # format dictionary to an embedding d
     embedding_df.reset_index(names="query",inplace=True) # names parameter here only works on newer versions of pandas
     embedding_df["query"] = embedding_df["query"].str.split('!!!').str[0]
     cols_names = ['neighborhood_name','vf_name','vfid','vf_category','species','genus']
-    embedding_df.columns.values[-len(cols_names):] = cols_names
+    col_names_map = {col:cols_names[i] for i, col in enumerate(embedding_df.columns[-len(cols_names):])}
+    embedding_df.rename(columns=col_names_map, inplace=True)
+    # embedding_df.columns.values[-len(cols_names):] = cols_names # I think this really messed up the col names so that I couldn't call it in the future
     return embedding_df
 
 def get_umapdf(embedding_df):

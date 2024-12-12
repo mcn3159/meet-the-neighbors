@@ -7,13 +7,12 @@
 
 import torch
 from torch import nn
-from gLM import *
-from transformers import RobertaConfig
+from meetneighbors.predictvfs.glm.gLM import *
+from meetneighbors.predictvfs.glm.glm_utils import *
 from tqdm import tqdm
 import os
 import sys
 import numpy as np
-from glm_utils import *
 import argparse
 import pathlib
 import datetime
@@ -32,7 +31,7 @@ def get_original_prot_ids(ids, id_dict):
         
     return ori_ids
 
-def infer(logging, data_dir, model,output_path, device, id_dict):
+def infer(logging, data_dir, model,output_path, device, id_dict, B_SIZE):
     f_list = os.listdir(data_dir)
     test_pkls=[]
     for pkl_f in f_list:
@@ -45,6 +44,7 @@ def infer(logging, data_dir, model,output_path, device, id_dict):
     
     torch.cuda.empty_cache()
     scaler = None
+    HALF = True
     if HALF:
         logging.info("Inference with mixed precision model")
         scaler = torch.cuda.amp.GradScaler()
@@ -121,6 +121,7 @@ def infer(logging, data_dir, model,output_path, device, id_dict):
         hidden_embs = hidden_embs[np.where(all_prot_ids != 0)[0]]
         output_embs = output_embs[np.where(all_prot_ids != 0)[0]]
         all_probs = all_probs[np.where(all_prot_ids != 0)[0]]
+        ALL_RESULTS,ATTENTION = False,False
         if ALL_RESULTS:
             results_filename = output_path+os.path.basename(pkl_f)+".results.pkl"
             results = {}
@@ -150,100 +151,70 @@ def infer(logging, data_dir, model,output_path, device, id_dict):
         pickle_file.close()
     return None
 
-parser = argparse.ArgumentParser(description = "outputs glm embeddings")
-parser.add_argument('-d','--data_dir', type=pathlib.Path, help='batched data directory')
-parser.add_argument('-id', '--id_path',  help='path to prot_index_dict.pkl file', default = None)
-parser.add_argument('-m','--model_path', help="path to pretrained model, glm.bin")
-parser.add_argument('-b','--batch_size', type=int, help='batch_size', default = 100)
-parser.add_argument('-o', '--output_path', type=str, help='inference output directory', default = None)
-parser.add_argument('--attention',action='store_true', help='output attention matrices ', default = False)
-parser.add_argument('--hidden_size', type=int, help='hidden size', default = 1280)
-parser.add_argument('-n', '--ngpus', type=int, help='number of GPUs to use',  default = 1)
-parser.add_argument('-a', '--all_results',action='store_true', help='output all results including plm_embs/glm_embs/prot_ids/outputs/output_probabilitess', default = False)
+# parser = argparse.ArgumentParser(description = "outputs glm embeddings")
+# parser.add_argument('-d','--data_dir', type=pathlib.Path, help='batched data directory')
+# parser.add_argument('-id', '--id_path',  help='path to prot_index_dict.pkl file', default = None)
+# parser.add_argument('-m','--model_path', help="path to pretrained model, glm.bin")
+# parser.add_argument('-b','--batch_size', type=int, help='batch_size', default = 100)
+# parser.add_argument('-o', '--output_path', type=str, help='inference output directory', default = None)
+# parser.add_argument('--attention',action='store_true', help='output attention matrices ', default = False)
+# parser.add_argument('--hidden_size', type=int, help='hidden size', default = 1280)
+# parser.add_argument('-n', '--ngpus', type=int, help='number of GPUs to use',  default = 1)
+# parser.add_argument('-a', '--all_results',action='store_true', help='output all results including plm_embs/glm_embs/prot_ids/outputs/output_probabilitess', default = False)
 
-# load all arguments 
-args = parser.parse_args()
-if args.data_dir is None :
-    parser.error('--data_dir must be specified')
-if args.model_path is None :
-    parser.error('--model must be specified')
-# define all parameters
-data_dir = args.data_dir
-ngpus = args.ngpus
-model_path = args.model_path
-num_pred = 4
-max_seq_length = 30 
-num_attention_heads = 10
-num_hidden_layers= 19
-output_path = args.output_path
-pos_emb = "relative_key_query"
-pred_probs = True
-id_path = args.id_path
-# define all global variables 
-HIDDEN_SIZE = args.hidden_size
-B_SIZE = args.batch_size # batch size
-HALF = True
-EMB_DIM = 1281
-NUM_PC_LABEL = 100
-ATTENTION = args.attention
-ALL_RESULTS = args.all_results
+# # load all arguments 
+# args = parser.parse_args()
+# if args.data_dir is None :
+#     parser.error('--data_dir must be specified')
+# if args.model_path is None :
+#     parser.error('--model must be specified')
 
-# make output folder if not specified
-e = datetime.datetime.now()
-if output_path == None:
-    output_path = "glm_inference"+ e.strftime("-%d-%m-%Y-%H:%M:%S")
-if not os.path.exists(output_path):
-    os.mkdir(output_path)
-
-logfile_path = output_path+"/info.log"
-
-if not os.path.exists(output_path+"/results"):
-    os.mkdir(output_path+"/results")
-results_dir = output_path+"/results/"
+def run_glm_embeds(model,pkg_data_dir,glm_embed_output_path,device,ngpus):
+    # define all parameters
+    data_dir = pkg_data_dir
+    # model_path = args.model_path
+    output_path = glm_embed_output_path
+    # id_path = protidpkl_path
+    B_SIZE = 100 # batch size
 
 
-# log is stored in both logfile and streamed to stdout
-# begin logging 
+    # make output folder if not specified
+    # e = datetime.datetime.now()
+    # if output_path == None:
+    #     output_path = "glm_inference"+ e.strftime("-%d-%m-%Y-%H:%M:%S")
+    if not os.path.exists(output_path):
+        os.mkdir(output_path)
 
-logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO, handlers=[
-        logging.FileHandler(logfile_path),
-        logging.StreamHandler()])
-logging.info("output folder: " +output_path)
-logging.info("log file is located here: " +logfile_path)
-string_of_command = f"{' '.join(sys.argv)}"
-logging.info("command: " + string_of_command)
+    logfile_path = output_path+"/info.log"
 
-# populate config 
-config = RobertaConfig(
-    max_position_embedding = max_seq_length,
-    hidden_size = HIDDEN_SIZE,
-    num_attention_heads = num_attention_heads,
-    type_vocab_size = 1,
-    tie_word_embeddings = False,
-    num_hidden_layers = num_hidden_layers,
-    num_pc = NUM_PC_LABEL, 
-    num_pred = num_pred,
-    predict_probs = pred_probs,
-    emb_dim = EMB_DIM,
-    output_attentions=True,
-    output_hidden_states=True,
-    position_embedding_type = pos_emb,
-)
+    if not os.path.exists(output_path+"/results"):
+        os.mkdir(output_path+"/results")
+    results_dir = output_path+"/results/"
 
-device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-model =  gLM(config)
-model.load_state_dict(torch.load(model_path, map_location=device),strict=False)
-model.eval()
-if ngpus>1:
-    model = torch.nn.DataParallel(model)
-model.to(device)
-total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    # log is stored in both logfile and streamed to stdout
+    # begin logging 
 
-logging.info("batch_size: "+str(B_SIZE))
+    logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO, handlers=[
+            logging.FileHandler(logfile_path),
+            logging.StreamHandler()])
+    logging.info("output folder: " +output_path)
+    logging.info("log file is located here: " +logfile_path)
+    string_of_command = f"{' '.join(sys.argv)}"
+    logging.info("command: " + string_of_command)
 
-if id_path != None:
-    id_dict = pk.load(open(id_path, "rb"))
-else:
+    model.eval()
+    ngpus=1
+    if ngpus>1:
+        model = torch.nn.DataParallel(model)
+    model.to(device)
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    logging.info("batch_size: "+str(B_SIZE))
+
+    # if id_path != None:
+    #     id_dict = pk.load(open(id_path, "rb"))
+    # else:
     id_dict = None
-with torch.no_grad():
-    infer(logging,data_dir,model,output_path=results_dir,device=device, id_dict=id_dict) 
+    with torch.no_grad():
+        infer(logging,data_dir,model,output_path=results_dir,device=device, id_dict=id_dict,B_SIZE=B_SIZE) 
+    return

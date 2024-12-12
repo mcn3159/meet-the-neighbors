@@ -25,11 +25,11 @@ def foldseek_search(args):
     foldseek_search_out = "foldseek_search_output" # directory for the foldseek search results
     subprocess.run(f"mkdir {args.out}{foldseek_search_out}/",shell=True)
 
-    concat_db = importlib.resources.files("meetneighbors.predictvfs.data.vf_ns_foldseekdb").resolve()
+    concat_db = importlib.resources.path("meetneighbors.predictvfs.data.vf_ns_foldseekdb","concatdbs")
     subprocess.run(f"foldseek search {args.foldseek_structs} {concat_db} {args.out}{foldseek_search_out}/foldseek_search_res {args.out}{foldseek_search_out}/foldseek_tmp --lddt-threshold 0.4 --threads {args.threads} -a"
         ,shell=True,check=True)
     
-    subprocess.run(["foldseek", "convertalis", args.foldseek_structs, {concat_db}, f"{args.out}{foldseek_search_out}/foldseek_search_res", f"{args.out}{foldseek_search_out}/foldseek_search_res.tsv", "--format-output", "query,qheader,target,theader,prob,qlen,alnlen,qstart,pident,qcov,alntmscore,qtmscore,ttmscore,lddt,qset"])
+    subprocess.run(["foldseek", "convertalis", args.foldseek_structs, concat_db, f"{args.out}{foldseek_search_out}/foldseek_search_res", f"{args.out}{foldseek_search_out}/foldseek_search_res.tsv", "--format-output", "query,qheader,target,theader,prob,qlen,alnlen,qstart,pident,qcov,alntmscore,qtmscore,ttmscore,lddt,qset"])
 
     struct_search_raw = pd.read_csv(f"{args.out}{foldseek_search_out}/foldseek_search_res.tsv",sep="\t", names = ["query","qheader","target","theader","prob","alnlen","qlen","qstart","pident","qcov","alntmscore","qtmscore","ttmscore","lddt","qset"])
     return struct_search_raw
@@ -181,7 +181,7 @@ def format_strucpreds(pred_raw,lb):
     struct_preds_expanded = pd.concat([struct_preds_expanded,struct_preds.iloc[:,1]],axis=1)
 
     # get names of of columns in predictions
-    col_names = [cat for cat in lb[0].classes_]
+    col_names = [cat for cat in lb.classes_]
     col_names.append('query')
     struct_preds_expanded.columns = col_names
     return struct_preds_expanded
