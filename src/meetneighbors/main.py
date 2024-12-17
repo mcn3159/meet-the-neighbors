@@ -184,8 +184,9 @@ def workflow(parser):
             if (len(glob.glob(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv"))==0 and args.resume) or (not args.resume):
                 mmseqs_grp_db,mmseqs_search = n.read_search_tsv(vfdb=args.from_vfdb,input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
                 
-                mmseqs_search = dd.from_pandas(mmseqs_search,npartitions=args.threads) # make it a dask dataframe there instad of in read_search_tsv() b/c its much easier to run
-                logger.debug("Reading in dataframe of clustered proteins from neighborhoods...")
+                # turning mmseqs_search into a dask dataframe was causing an error
+                # mmseqs_search = dd.from_pandas(mmseqs_search,npartitions=args.threads) # make it a dask dataframe there instad of in read_search_tsv() b/c its much easier to run
+                # logger.debug("Reading in dataframe of clustered proteins from neighborhoods...")
                 mmseqs_clust = pn.prep_cluster_tsv(f"{args.out}combined_fastas_clust_res.tsv",logger)
                 logger.debug(f"Total number of neighborhoods found: {len(set(mmseqs_clust['neighborhood_name']))}")
 
@@ -409,6 +410,7 @@ def workflow(parser):
         vfid_mapping,vfquery_vfid = tsvs_d['VFID_mapping_specified.tsv'],tsvs_d['vfquery_to_id_tocat.tsv']
         struct_search = sc.format_search([struct_search_raw],meta = ['q_vn'],vfquery_vfid=vfquery_vfid,vfmap_df=vfid_mapping)
         struct_search = sc.format_searchlabels(struct_search)
+        struct_search.to_csv(f"{args.out}foldseek_search_labelsmapped.tsv",sep="\t",index=False)
 
         logger.debug("Collecting best structural similarity for each functional group if exists...")
         queries_db = db.from_sequence(set(struct_search['query']),npartitions = args.threads)

@@ -9,11 +9,11 @@ import sys
 import numpy as np
 import pickle as pk
 
-emb_f = sys.argv[1]
-contig_to_prots_f = sys.argv[2]
-output_dir = sys.argv[3]
-norm_factors_f = "norm.pkl"
-pca_pkl_f = "pca.pkl"
+# emb_f = sys.argv[1]
+# contig_to_prots_f = sys.argv[2]
+# output_dir = sys.argv[3]
+# norm_factors_f = "norm.pkl"
+# pca_pkl_f = "pca.pkl"
 
 def run_batcher(emb_f,contig_to_prots_f,norm_factors,PCA_LABEL,output_dir):
     contigs_to_prots_file = open(contig_to_prots_f, "r")

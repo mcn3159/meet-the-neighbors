@@ -148,7 +148,7 @@ class VF_neighborhoods:
         if threshold == 0: # for speed
             return list(self.cdhit_sub_piv.index)
         # picked single linkage b/c I should get the most unique/least amount of clusters, classification performance is good w/ the most unique neighborhoods
-        neighborhood_clusters = AgglomerativeClustering(n_clusters=None,distance_threshold=threshold,metric="precomputed",linkage=linkage_method).fit(dist_matrix) 
+        neighborhood_clusters = AgglomerativeClustering(n_clusters=None,distance_threshold=threshold,affinity="precomputed",linkage=linkage_method).fit(dist_matrix) # sklearn version 1.1.2 is older so keyword metric is replaced with affinity
         unique_clusters = np.unique(neighborhood_clusters.labels_)
         rep_neighborhood_indices = []
         for c in unique_clusters:
