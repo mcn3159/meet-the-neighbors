@@ -134,7 +134,7 @@ class VF_neighborhoods:
 
     def calc_clusters(self): # DBSCAN was used for plotting, I don't use much anymore
         warnings.filterwarnings(action='ignore', category=DataConversionWarning)
-        db_res = DBSCAN(eps=self.dbscan_eps, min_samples=self.dbscan_min, metric='jaccard').fit(self.cdhit_sub_piv)
+        db_res = DBSCAN(eps=self.dbscan_eps, min_samples=self.dbscan_min, metric='jaccard').fit(self.cdhit_sub_piv) # using jaccard instead of hamming, b/c jaccard doesn't take into acct 0s (check Jul 8 2024 notes)
         return len(set(db_res.labels_)) - (1 if -1 in db_res.labels_ else 0), list(db_res.labels_).count(-1)
     
     def neighborhood_freqs(self): # get neighborhood entropies
@@ -147,7 +147,7 @@ class VF_neighborhoods:
             return list(self.cdhit_sub_piv.index)
         if threshold == 0: # for speed
             return list(self.cdhit_sub_piv.index)
-        # picked single linkage b/c I should get the most unique/least amount of clusters, classification performance is good w/ the most unique neighborhoods
+        # goal of clustering is to find really similar neighborhoods, those with a jaccard distance below a threshold
         neighborhood_clusters = AgglomerativeClustering(n_clusters=None,distance_threshold=threshold,affinity="precomputed",linkage=linkage_method).fit(dist_matrix) # sklearn version 1.1.2 is older so keyword metric is replaced with affinity
         unique_clusters = np.unique(neighborhood_clusters.labels_)
         rep_neighborhood_indices = []

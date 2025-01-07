@@ -1,6 +1,7 @@
 import subprocess
 import argparse
 import os
+import shutil
 import numpy as np
 import pandas as pd
 import warnings
@@ -181,6 +182,9 @@ def workflow(parser):
                 subprocess.run(f"mmseqs createtsv {args.out}combined_fastas_db {args.out}combined_fastas_db {args.out}combined_fastas_clust {args.out}combined_fastas_clust_res.tsv"
         ,shell=True,check=True)
                 
+                # prepare directory for mmseqs_clust file, here before below if so we don't hit the mkdir error
+                subprocess.run(f"mkdir {args.out}clust_res_in_neighborhoods",shell=True,check=True)
+
             if (len(glob.glob(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv"))==0 and args.resume) or (not args.resume):
                 mmseqs_grp_db,mmseqs_search = n.read_search_tsv(vfdb=args.from_vfdb,input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
                 
@@ -220,10 +224,9 @@ def workflow(parser):
                     # get a list of neighborhoods that contain multiple hits from the query fasta (great for getting neighborhoods w/ muliple VFs)
                     mmseqs_clust,multi_query_nn = pn.select_multivf_neighborhoods(mmseqs_clust,loose_vf_search=multi_vf_search,logger=logger)
                     mmseqs_clust = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(multi_query_nn)]
-                
-                subprocess.run(f"mkdir {args.out}clust_res_in_neighborhoods",shell=True,check=True)
-                mmseqs_clust = dd.from_pandas(mmseqs_clust,npartitions=args.threads)
-                mmseqs_clust.to_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",index=False,sep="\t")
+                    mmseqs_clust = dd.from_pandas(mmseqs_clust,npartitions=args.threads)
+
+                dd.from_pandas(mmseqs_clust,npartitions=args.threads).to_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",index=False,sep="\t")
                 mmseqs_clust = mmseqs_clust.compute()
             
             elif len(glob.glob(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv"))>0 and args.resume:
@@ -262,8 +265,15 @@ def workflow(parser):
 
             if args.glm:
                 # take neighborhoods in class_objs and prep them to be fed into gLM for embeddings
-                glm_input_out = f"glm_inputs_{args.glm_cluster}_jaccard{str(args.glm_threshold)[1:]}/"
-                subprocess.run(f"mkdir {args.out}{glm_input_out}",shell=True,check=True) # should return an error if the path already exists, don't want to make duplicates
+                try:
+                    glm_input_out = f"glm_inputs_{args.glm_cluster}_jaccard{str(args.glm_threshold)[1:]}/"
+                    os.mkdir(args.out + glm_input_out) # should return an error if the path already exists, incase program finished in the middle of creating inputs, restart from here
+                except FileExistsError as e: # if running w/ resume and glm_inputs directory is already made, clear it then make inputs from the beginning
+                    logger.error(e)
+                    logger.debug("Removing contents from glm inputs directory then recreating..")
+                    shutil.rmtree(args.out + glm_input_out) # switched to shutil and os here b/c subprocess wasn't finding directory to remove for whatever reason
+                    os.mkdir(args.out + glm_input_out)
+
                 logger.debug("Grabbing cluster representatives...")
                 if not os.path.isfile(f"{args.out}combined_fastas_clust_rep.fasta"): # save time if resuming
                     subprocess.run(f"mmseqs createsubdb {args.out}combined_fastas_clust {args.out}combined_fastas_db {args.out}combined_fastas_clust_rep",shell=True,check=True)
@@ -465,6 +475,7 @@ def workflow(parser):
         if (not args.umap_obj) and (not args.embedding_df):
             glm_res_d_vals_predf =  cu.unpack_embeddings(glm_out,glm_in,mmseqs_clust)
             embedding_df_merge = cu.get_glm_embeddf(glm_res_d_vals_predf)
+            embedding_df_merge.to_csv(f"{args.out}glm_embeds.tsv",sep="\t",index=False)
             umapper = cu.get_umapdf(embedding_df_merge)
             handle = open(f"{args.out}umapper.obj","wb")
             pkl.dump(umapper,handle)
