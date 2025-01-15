@@ -78,7 +78,7 @@ def get_parser():
 
     # haven't decided whether or not I want add a functionality that clusters all the protein with the genome before sending to glm input, would potentially be a big speed up
 
-    # chop_genome.add_argument("--cluster",type="store_true", required=False, default=30, help="Cluster neighborhoods from genomes")
+    # chop_genome.add_argument("--cluster",action="store_true", required=False, default=30, help="Cluster neighborhoods from genomes")
     # chop_genome.add_argument("--seq_id","-s", type=float, required=False, default=0.9, help="Sequence identity for mmseqs search in genomes")
     # chop_genome.add_argument("--cov","-c", type=float, required=False, default=0.9, help="Sequence coverage for mmseqs search in genomes")
     chop_genome.add_argument('--out','-o',type=str,default='',required=True,help="Output directory")
@@ -88,9 +88,10 @@ def get_parser():
     compute_umap.add_argument("--glm_in",type=str,required=False,default="glm_inputs",help="Give directory containing inputs used to generate glm embbeds")
     compute_umap.add_argument("--glm_out",type=str,required=True,help="Give directory containing glm embeddings")
     compute_umap.add_argument("--neighborhood_run",type=str,required=True,help="Give directory containing neighborhoods used for glm inputs")
-    compute_umap.add_argument("--umap_obj",type=str,required=False,help="Path to umap object file")
-    compute_umap.add_argument("--embedding_df",type=str,required=False,help="Path to embedding tsv dataframe")
+    compute_umap.add_argument("--umap_obj",type=str,required=False,help="If already computed, provide path to umap object file")
+    compute_umap.add_argument("--embedding_df",type=str,required=False,help="If already computed, provide path to embedding tsv dataframe")
     compute_umap.add_argument("--umap_name",type=str,required=False,default="umap",help="Filename for umap plot")
+    compute_umap.add_argument("--plt_umap","-p",action="store_true",required=False,help="return a plot of umap, must install umap.plot and its dependencies")
     compute_umap.add_argument('--out','-o',type=str,default='',required=False,help="Output directory")
     compute_umap.add_argument('--label','-l',type=str,default='vf_category',required=False,help="Column label to color umap points by. Current options are vf_category,vf_name,vf_subcategory,vfdb_species,vfdb_genus,vf_id")
     compute_umap.add_argument('--width',type=int,default=1000,required=False,help="Width of umap plot")
@@ -100,7 +101,7 @@ def get_parser():
     predictvf.add_argument("--genomes","-g", type=str, required=True, help="Give path to folder w/ proteins and gffs")
     predictvf.add_argument("--threads", type=int,default=4, help="Number of threads")
     predictvf.add_argument("--ngpus", type=int,default=0, help="Number of gpus to use for embedding making")
-    # predictvf.add_argument("--glm_embeds",type=str,required=False,help="tsv file containing glm embeddings")
+    predictvf.add_argument("--glm_embeds",type=str,required=False,help="tsv file containing glm embeddings")
     predictvf.add_argument("--foldseek_structs",type=str,required=True,help="Directory containing foldseek db of query protein structures")
     predictvf.add_argument("--out","-o",type=str,help="Output directory")
     predictvf.add_argument("--qtmcutoff",type=int,default=0.6,help="qTMscore cutoff for defining a structure-based hit, ignores qcovcutoff")
@@ -110,7 +111,7 @@ def get_parser():
     predictvf.add_argument("--neighborhood_size","-ns",type=int, required=False, default=20000, help="Size in bp of neighborhood to extract. 10kb less than start, and 10kb above end of center DNA seq")
     predictvf.add_argument("--min_prots","-mip",type=int, required=False, default=3, help="Minimum number of proteins in neighborhood")
     predictvf.add_argument("--max_prots","-map",type=int, required=False, default=30, help="Maximum number of proteins in neighborhood")
-    predictvf.add_argument("--resume","-r",required=False,action="store_true",help="Resume where program Neighbors left off. Output directory must be the same")
+    # predictvf.add_argument("--resume","-r",required=False,action="store_true",help="Resume where program Neighbors left off. Output directory must be the same")
 
     return parser
 
@@ -321,7 +322,6 @@ def workflow(parser):
         c.compare_neighborhood_entropy(neighborhood1,neighborhood2,label1=args.name1,label2=args.name2,out=args.out)
         c.compare_uniqhits_trends(neighborhood1,neighborhood2,label1=args.name1,label2=args.name2,out=args.out,write_table=True)
 
-    
 
     if args.subcommand == "chop-genome":
         logger = get_logger(args.subcommand,args.out)
@@ -374,42 +374,55 @@ def workflow(parser):
         dirs_l = check_dirs(args.genomes,args.out)
         args.genomes,args.out = dirs_l[0],dirs_l[1]
         pkl_objs = l.load_pickle()
-
-        logger.debug(f"Pulling neighborhoods from {len(glob.glob(args.genomes))/2} pairs of proteomes + gffs...")
-        mmseqs_clust,singular_combinedfasta = nc.pull_neighborhoodsdf(args,logger)
-
-        glm_input_out = "glm_inputs"
-        subprocess.run(f"mkdir {args.out}{glm_input_out}/",shell=True) # should return an error if the path already exists, don't want to make duplicates
-
-        # create tsvs for glm inputs, one tsv per protein
-        logger.debug(f"Transforming collected {len(set(mmseqs_clust['query']))} proteins for input into the gLM...")
-        db.map(glm.get_glm_input,query=db.from_sequence(list(set(mmseqs_clust['query'])),npartitions=args.threads),
-                mmseqs_clust=mmseqs_clust,combinedfasta=singular_combinedfasta,glm_input_dir=glm_input_out,logger=logger,args=args).compute()
         
-        glm_ouputs_out = "glm_outputs"
-        subprocess.run(f"mkdir {args.out}{glm_ouputs_out}/",shell=True)
-        logger.debug("Computing pLM embeddings...")
-        nc.get_plm_embeds(args.out+glm_input_out, args.out+glm_ouputs_out)
+        if not args.glm_embeds:
+            # if (args.resume and not os.path.isfile(f'{args.out}clust_res_in_neighborhoods/mmseqs_clust.tsv')) or (not args.resume):
+            logger.debug(f"Pulling neighborhoods from {len(glob.glob(args.genomes))/2} pairs of proteomes + gffs...")
+            mmseqs_clust,singular_combinedfasta = nc.pull_neighborhoodsdf(args,logger)
 
-        tsvs_to_getembeds = glob.glob(args.out+glm_input_out+"/*.tsv")
-        computed_embed_names = [f.split('/')[-1] for f in glob.glob(args.out+glm_ouputs_out+"/*")] #only keep the query name from split for easier identification
-        files = [file.split('.tsv')[0] for file in tsvs_to_getembeds if file.split('/')[-1].split('.tsv')[0] not in computed_embed_names] # make sure embed hasnt been computed already
+            # if (args.resume and os.path.isfile(f'{args.out}clust_res_in_neighborhoods/mmseqs_clust.tsv')) or (not args.resume):
+            glm_input_out = "glm_inputs"
+            try:
+                os.mkdir(args.out + glm_input_out) # should return an error if the path already exists, incase program finished in the middle of creating inputs, restart from here
+            except FileExistsError as e: # if running w/ resume and glm_inputs directory is already made, clear it then make inputs from the beginning
+                logger.error(e)
+                logger.debug("Removing contents from glm inputs directory then recreating..")
+                shutil.rmtree(args.out + glm_input_out) # switched to shutil and os here b/c subprocess wasn't finding directory to remove for whatever reason
+                os.mkdir(args.out + glm_input_out)
+
+                # create tsvs for glm inputs, one tsv per protein
+                logger.debug(f"Transforming collected {len(set(mmseqs_clust['query']))} proteins for input into the gLM...")
+                db.map(glm.get_glm_input,query=db.from_sequence(list(set(mmseqs_clust['query'])),npartitions=args.threads),
+                        mmseqs_clust=mmseqs_clust,combinedfasta=singular_combinedfasta,glm_input_dir=glm_input_out,logger=logger,args=args).compute()
+            
+            glm_ouputs_out = "glm_outputs"
+            subprocess.run(f"mkdir {args.out}{glm_ouputs_out}/",shell=True)
+            logger.debug("Computing pLM embeddings...")
+            nc.get_plm_embeds(args.out+glm_input_out, args.out+glm_ouputs_out)
+
+            tsvs_to_getembeds = glob.glob(args.out+glm_input_out+"/*.tsv")
+            computed_embed_names = [f.split('/')[-1] for f in glob.glob(args.out+glm_ouputs_out+"/*")] #only keep the query name from split for easier identification
+            files = [file.split('.tsv')[0] for file in tsvs_to_getembeds if file.split('/')[-1].split('.tsv')[0] not in computed_embed_names] # make sure embed hasnt been computed already
+            
+            logger.debug(f"Computing gLM embeddings for: {len(files)} proteins")
+
+            files_db = db.from_sequence(files,npartitions=args.threads) #I dont think npartitions matters too much here, number of parllelizes calls will be equal to # of gpus available
+            
+            res_name = db.map(nc.create_glm_embeds,files_db,args.out+glm_ouputs_out,norm_factors=pkl_objs['norm.pkl'],PCA_LABEL=pkl_objs['pca.pkl'],ngpus=args.ngpus)
+            res_name = res_name.compute()
+
+            mmseqs_clust = pd.read_csv(f"{args.out}/clust_res_in_neighborhoods/mmseqs_clust.tsv",sep='\t')
+            glm_res_d_vals_predf =  cu.unpack_embeddings(args.out+glm_ouputs_out,args.out+glm_input_out,mmseqs_clust)
+            embedding_df_merge = cu.get_glm_embeddf(glm_res_d_vals_predf)
+            embedding_df_merge.to_csv(f"{args.out}glm_embeds.tsv",sep="\t",index=False)
         
-        logger.debug(f"Computing gLM embeddings for: {len(files)} proteins")
-
-        files_db = db.from_sequence(files,npartitions=args.threads) #I dont think npartitions matters too much here, number of parllelizes calls will be equal to # of gpus available
-        
-        res_name = db.map(nc.create_glm_embeds,files_db,args.out+glm_ouputs_out,norm_factors=pkl_objs['norm.pkl'],PCA_LABEL=pkl_objs['pca.pkl'],ngpus=args.ngpus)
-        res_name = res_name.compute()
-
-        mmseqs_clust = pd.read_csv(f"{args.out}/clust_res_in_neighborhoods/mmseqs_clust.tsv",sep='\t')
-        glm_res_d_vals_predf =  cu.unpack_embeddings(args.out+glm_ouputs_out,args.out+glm_input_out,mmseqs_clust)
-        embedding_df_merge = cu.get_glm_embeddf(glm_res_d_vals_predf)
-        embedding_df_merge.to_csv(f"{args.out}glm_embeds.tsv",sep="\t",index=False)
+        if args.glm_embeds:
+            embedding_df_merge = pd.read_csv(args.glm_embeds,sep="\t")
+            mmseqs_clust = pd.read_csv(f'{args.out}clust_res_in_neighborhoods/mmseqs_clust.tsv',sep="\t")
 
         lb = pkl_objs['labelbinarizer_vfcategories.obj']
-        nn_clf_weights = l.load_nn_clf_model()
-        nn_preds_res = nc.get_embed_preds(embedding_df_merge,nn_clf_weights,lb=lb,args=args)
+        models_dict = l.load_clf_models()
+        nn_preds_res = nc.get_embed_preds(embedding_df_merge,models_dict['nn_clf'],lb=lb,args=args)
         nn_preds_res.to_csv(f"{args.out}neighborhood_based_predictions.tsv",sep="\t",index=False)
 
         # pull together structure search results
@@ -432,7 +445,7 @@ def workflow(parser):
         logger.debug("Integrating neighborhood and structure based predictions")
         nn_struct_preds = pd.merge(nn_preds_res,struct_preds_res,on='query',how='left')
         nn_struct_preds.fillna(0.0,inplace=True) # some queries don't show up in structure search b/c no hits. Which is why there are more neighborhoods than struct hits
-        integrated_preds = clf.meta_classifier(nn_struct_preds=nn_struct_preds,model=pkl_objs['meta-LR_11142024.obj'],lb=lb)
+        integrated_preds = clf.meta_classifier(nn_struct_preds=nn_struct_preds,model=models_dict['int_clf'],lb=lb)
 
         if args.include_structhits:
             mmseqs_clust['true_lc'] = mmseqs_clust['locus_tag'].str.split('!!!').str[0] # b/c these are similar to names used in foldseek search
@@ -449,7 +462,6 @@ def workflow(parser):
             integrated_preds['nn_struct_hits'] = integrated_preds['nn_struct_hits'].fillna(0) # fill neighborhoods with no hits with 0
 
         integrated_preds.to_csv(f"{args.out}integrated_predictions.tsv",sep="\t",index=False)
-
 
 
     if args.subcommand == "compute_umap": # gotta change the functions used for this
@@ -485,9 +497,10 @@ def workflow(parser):
             umapper = pkl.load(handle)
             handle.close()
             embedding_df_merge = pd.read_csv(args.embedding_df,sep="\t")
-            
-        cu.plt_baby(umapper,embedding_df_merge,plt_name=args.umap_name,outdir=args.out,
-                    legend=args.legend,width=args.width,label=args.label)
+        
+        if args.plt_umap:
+            cu.plt_baby(umapper,embedding_df_merge,plt_name=args.umap_name,outdir=args.out,
+                        legend=args.legend,width=args.width,label=args.label)
 
     logger.debug(f"Done! Took --- %s seconds --- to complete" % (time.time() - start_time))
     return

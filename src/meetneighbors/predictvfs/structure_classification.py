@@ -25,7 +25,7 @@ def foldseek_search(args):
     foldseek_search_out = "foldseek_search_output" # directory for the foldseek search results
     subprocess.run(f"mkdir {args.out}{foldseek_search_out}/",shell=True)
 
-    concat_db = importlib.resources.path("meetneighbors.predictvfs.data.vf_ns_foldseekdb","concatdbs")
+    concat_db = importlib.resources.path("meetneighbors.predictvfs.data.vf_ns_foldseekdb","sec_vf_rand8kNS_db")
     subprocess.run(f"foldseek search {args.foldseek_structs} {concat_db} {args.out}{foldseek_search_out}/foldseek_search_res {args.out}{foldseek_search_out}/foldseek_tmp --lddt-threshold 0.4 --threads {args.threads} -a"
         ,shell=True,check=True)
     

@@ -19,6 +19,9 @@ def load_pickle():
     data = {file.name:pkl.load(file.open('rb')) for file in data_dir.iterdir() if file.name.endswith(".obj") or file.name.endswith(".pkl")}
     return data
 
-def load_nn_clf_model():
+def load_clf_models():
     # return path of model for pytorch to work with
-    return importlib.resources.path("meetneighbors.predictvfs.data","nn_clf_pytorch_11212024.bin")
+    models_dict = {"nn_clf":importlib.resources.path("meetneighbors.predictvfs.models","nn_clf_pytorch_cats_1132025.bin"),
+                   "int_clf":importlib.resources.path("meetneighbors.predictvfs.models","meta-LR_1132025.obj")}
+    return models_dict
+    

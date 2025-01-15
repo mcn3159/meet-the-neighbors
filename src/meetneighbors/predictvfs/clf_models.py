@@ -9,11 +9,11 @@ import torch.optim as optim
 class FullyConnectedNN(nn.Module):
     def __init__(self, input_dim, num_classes):
         super(FullyConnectedNN, self).__init__()
-        self.fc1 = nn.Linear(input_dim, 256)
-        self.dropout1 = nn.Dropout(0.4)
-        self.fc2 = nn.Linear(256, 64)
+        self.fc1 = nn.Linear(input_dim, 384)
+        self.dropout1 = nn.Dropout(0.6)
+        self.fc2 = nn.Linear(384, 32)
         self.dropout2 = nn.Dropout(0.2)
-        self.fc3 = nn.Linear(64, num_classes)
+        self.fc3 = nn.Linear(32, num_classes)
         
     def forward(self, x):
         x = torch.relu(self.fc1(x))
@@ -25,6 +25,7 @@ class FullyConnectedNN(nn.Module):
     
 # load the meta classifier
 def meta_classifier(nn_struct_preds,model,lb):
+    model = pkl.load(model.open('rb'))
     first_feature_ind = 3
     meta_preds = model.predict_proba(nn_struct_preds.rename(columns=
                                     {col:str(i)+'_x' if '_x' in col else str(i-8)+'_y' 
