@@ -12,6 +12,7 @@ import time
 import pickle as pkl
 import glob
 import logging
+import tempfile
 import sys
 
 
@@ -59,6 +60,7 @@ def get_parser():
     extract_neighbors.add_argument("--mvn_seq_id","-mvn_s", type=float, required=False, default=0.3, help="Sequence identity for 2nd mmseqs search in genomes")
     extract_neighbors.add_argument("--mvn_cov","-mvn_c", type=float, required=False, default=0.8, help="Sequence coverage for 2nd mmseqs search in genomes")
     extract_neighbors.add_argument("-ho","--head_on",required=False,action="store_true",help="Extract neighborhoods with genes in opposite orientations")
+    extract_neighbors.add_argument("--remove_temp",required=False,action="store_true",help="Remove temp directory created along with all of its contents")
 
     comp_neighbors = subparsers.add_parser("compare_neighborhoods",help="Compare multiple neighborhood tsvs")
     comp_neighbors.add_argument('--neighborhood1','-n1',type=str,required=True,help="Give full path to 1st neighborhood to compare")
@@ -107,7 +109,7 @@ def get_parser():
     predictvf.add_argument("--qtmcutoff",type=int,default=0.6,help="qTMscore cutoff for defining a structure-based hit, ignores qcovcutoff")
     predictvf.add_argument("--fs_qcovcutoff",type=int,default=0.75,help="foldseek search qcov cutoff for defining a structure-based hit")
     predictvf.add_argument("--lddtcutoff",type=int,default=0.75,help="lddt cutoff for defining a structure-based hit")
-    predictvf.add_argument("--include_structhits",action="store_true",help="Compute number of structural hits per neighborhood")
+    predictvf.add_argument("--include_structhits",type=str,required=False,help="Give path to neighborhood output folder to compute number of structural hits per neighborhood")
     predictvf.add_argument("--neighborhood_size","-ns",type=int, required=False, default=20000, help="Size in bp of neighborhood to extract. 10kb less than start, and 10kb above end of center DNA seq")
     predictvf.add_argument("--min_prots","-mip",type=int, required=False, default=3, help="Minimum number of proteins in neighborhood")
     predictvf.add_argument("--max_prots","-map",type=int, required=False, default=30, help="Maximum number of proteins in neighborhood")
@@ -149,6 +151,7 @@ def workflow(parser):
             genomes_db = f"{args.out}genomesDB"
         logger = get_logger(args.subcommand,args.out)
         logger.debug("Extracting neighborhoods...")
+        removed_prot_gffs,tmpd = [], None # used later to check for removed neighborhoods via temp files
 
         if not args.plt_from_saved:
             if not args.genomes_db:
@@ -171,7 +174,16 @@ def workflow(parser):
                 logger.debug("Pulling neighborhoods...")
                 mmseqs_grp_db,mmseqs_search = n.read_search_tsv(vfdb=args.from_vfdb,input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
                 logger.info(f"Number of query proteins with hits: {len(set(mmseqs_search['query']))}")
-                neighborhood_db = db.map(n.get_neigborhood,logger,args,mmseqs_groups = mmseqs_grp_db,head_on=args.head_on)
+
+                tmpd = tempfile.mkdtemp(dir=args.out,prefix='tempdir_')
+
+                neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, mmseqs_groups = mmseqs_grp_db,head_on=args.head_on)
+                
+                tmpfiles = glob.glob(tmpd+'/*') # should probably use pathlib for this or os.path.join?
+                for tmpf_path in tmpfiles:
+                    with open(tmpf_path,'r') as tmpf:
+                        removed_prot_gffs.extend(tmpf.read().splitlines())
+
                 neighborhood_db = neighborhood_db.flatten()
                 n.run_fasta_from_neighborhood(logger,args,dir_for_fasta=args.genomes,neighborhood=neighborhood_db,
                                             fasta_per_uniq_neighborhood=args.fasta_per_neighborhood,out_folder=args.out,threads=args.threads)
@@ -194,6 +206,7 @@ def workflow(parser):
                 # logger.debug("Reading in dataframe of clustered proteins from neighborhoods...")
                 mmseqs_clust = pn.prep_cluster_tsv(f"{args.out}combined_fastas_clust_res.tsv",logger)
                 logger.debug(f"Total number of neighborhoods found: {len(set(mmseqs_clust['neighborhood_name']))}")
+                
 
                 if args.red_olp:
                     # reduce the number of neighborhoods that overalp in terms of location on the same chromosome
@@ -205,8 +218,23 @@ def workflow(parser):
                     logger.debug(f"Clustering df size after reducing number of overlapping neighborhoods: {mmseqs_clust.shape}")
                     logger.debug(f"Total number of neighborhoods after reducing number of overlapping neighborhoods: {len(set(mmseqs_clust['neighborhood_name']))}")
                 del mmseqs_grp_db
+                
+                if (args.resume and len(removed_prot_gffs) == 0): # case if resume is called, and temp obj needs to recreated
+                    try:
+                        tmpfiles_backup = glob.glob(f"{args.out}tempdir_*/protgff_*")
+                        for tmpf_path in tmpfiles_backup:
+                            with open(tmpf_path,'r') as tmpf:
+                                removed_prot_gffs.extend(tmpf.read().splitlines())
+                        
+                        if args.remove_temp:
+                            shutil.rmtree(os.path.dirname(tmpfiles_backup)[0])
+                    except Exception as e: # if the delete temp dir command was given
+                        logger.error(e)
 
-                mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search,args.from_vfdb,logger)
+                mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search,args.from_vfdb,removed_prot_gffs,logger)
+
+                if args.remove_temp and tmpd != None:
+                    shutil.rmtree(tmpd)
 
                 if args.multi_vf_nn: 
                     # motivated by getting neighborhoods containing multiple VFs
@@ -227,7 +255,7 @@ def workflow(parser):
                     mmseqs_clust = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(multi_query_nn)]
                     mmseqs_clust = dd.from_pandas(mmseqs_clust,npartitions=args.threads)
 
-                dd.from_pandas(mmseqs_clust,npartitions=args.threads).to_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",index=False,sep="\t")
+                mmseqs_clust.to_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",index=False,sep="\t")
                 mmseqs_clust = mmseqs_clust.compute()
             
             elif len(glob.glob(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv"))>0 and args.resume:
@@ -371,8 +399,8 @@ def workflow(parser):
     if args.subcommand == 'predictvf':
         logger = get_logger(args.subcommand,args.out)
         logger.debug("Chopping up some genomes...")
-        dirs_l = check_dirs(args.genomes,args.out)
-        args.genomes,args.out = dirs_l[0],dirs_l[1]
+        dirs_l = check_dirs(args.genomes,args.out,args.include_structhits)
+        args.genomes,args.out,args.include_structhits = dirs_l[0],dirs_l[1],dirs_l[2]
         pkl_objs = l.load_pickle()
         
         if not args.glm_embeds:
@@ -411,14 +439,14 @@ def workflow(parser):
             res_name = db.map(nc.create_glm_embeds,files_db,args.out+glm_ouputs_out,norm_factors=pkl_objs['norm.pkl'],PCA_LABEL=pkl_objs['pca.pkl'],ngpus=args.ngpus)
             res_name = res_name.compute()
 
-            mmseqs_clust = pd.read_csv(f"{args.out}/clust_res_in_neighborhoods/mmseqs_clust.tsv",sep='\t')
+            mmseqs_clust = pd.read_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust.tsv",sep='\t')
             glm_res_d_vals_predf =  cu.unpack_embeddings(args.out+glm_ouputs_out,args.out+glm_input_out,mmseqs_clust)
             embedding_df_merge = cu.get_glm_embeddf(glm_res_d_vals_predf)
             embedding_df_merge.to_csv(f"{args.out}glm_embeds.tsv",sep="\t",index=False)
         
         if args.glm_embeds:
             embedding_df_merge = pd.read_csv(args.glm_embeds,sep="\t")
-            mmseqs_clust = pd.read_csv(f'{args.out}clust_res_in_neighborhoods/mmseqs_clust.tsv',sep="\t")
+            mmseqs_clust = dd.read_csv(f'{args.include_structhits}clust_res_in_neighborhoods/mmseqs_clust*',sep="\t",dtype={'query': 'object'}).compute()
 
         lb = pkl_objs['labelbinarizer_vfcategories.obj']
         models_dict = l.load_clf_models()
@@ -436,7 +464,9 @@ def workflow(parser):
         struct_search.to_csv(f"{args.out}foldseek_search_labelsmapped.tsv",sep="\t",index=False)
 
         logger.debug("Collecting best structural similarity for each functional group if exists...")
-        queries_db = db.from_sequence(set(struct_search['query']),npartitions = args.threads)
+        struct_search_queries = set(struct_search['query'])
+        logger.info(f"Structure-based search results for {len(set(nn_preds_res['query']) - struct_search_queries)} queries could not be found...")
+        queries_db = db.from_sequence(struct_search_queries,npartitions = args.threads)
         pred_raw = db.map(sc.alltopNhits_probs_threadable,queries_db,df=struct_search[['query','target','qtmscore','tvf_category']],score_metric="qtmscore",lb=lb)
         pred_raw = pred_raw.compute()
         struct_preds_res = sc.format_strucpreds(pred_raw=pred_raw,lb=lb)
@@ -444,6 +474,7 @@ def workflow(parser):
 
         logger.debug("Integrating neighborhood and structure based predictions")
         nn_struct_preds = pd.merge(nn_preds_res,struct_preds_res,on='query',how='left')
+        
         nn_struct_preds.fillna(0.0,inplace=True) # some queries don't show up in structure search b/c no hits. Which is why there are more neighborhoods than struct hits
         integrated_preds = clf.meta_classifier(nn_struct_preds=nn_struct_preds,model=models_dict['int_clf'],lb=lb)
 

@@ -12,7 +12,6 @@ import numpy as np
 from scipy.stats import entropy
 import dask.dataframe as dd
 
-# def prep_cluster_tsv(mmseqs_res_dir,logger):
 def prep_cluster_tsv(mmseqs_res_dir,logger):
 
     #run for mmseqs clustered results
@@ -42,18 +41,26 @@ def prep_cluster_tsv(mmseqs_res_dir,logger):
     logger.debug(f"Size of mmseqs cluster results: {mmseqs.shape}")
     return mmseqs
 
-def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb,logger):
+def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb,removed_neighborhoods,logger):
     # map query search hits to each target neighborhood in the cluster df
     # what if the same protein fasta has multiple proteins with the same name
     
     mmseqs_search['gff_name'] = mmseqs_search.tset.str.split('_protein.faa').str[0]
     mmseqs_search['prot_gffname'] = mmseqs_search['target'] + '!!!' + mmseqs_search['gff_name']
+
+    # check how many query had all their neighborhoods removed b/c the minimum neighborhood conditions were not met
+    if removed_neighborhoods != None:
+        surviving_queries = len(set(mmseqs_search[~mmseqs_search['prot_gffname'].isin(removed_neighborhoods)]['query']))
+        logger.debug(f"Number of queries that didn't pass minimum neighborhood criteria: {len(set(mmseqs_search['query'])) - surviving_queries} out of {len(set(mmseqs_search['query']))} with hits")
+
     mmseqs_search.drop_duplicates(subset=['prot_gffname'],inplace=True) # to reduce mmseqs_clust shape explosion
+
+    # merge with how=left to keep NAs for proteins that part of the neighborhood but not a VF
     if vfdb:
-        mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','prot_gffname',"vf_name","vf_subcategory","vf_id","vf_category",'vfdb_species','vfdb_genus']],on='prot_gffname',how="left")
+        mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','prot_gffname',"vf_name","vf_subcategory","vf_id","vf_category",'vfdb_species','vfdb_genus']],on='prot_gffname',how="left") 
     else:
         mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','prot_gffname']],on='prot_gffname',how="left")
-    logger.info(f"Head of merge results: {mmseqs_clust.head()}")
+    logger.info(f"Size post search and cluster results merge: {mmseqs_clust.shape}")
     return mmseqs_clust
 
 def reduce_overlap(mmseqs_clust_sub,window):

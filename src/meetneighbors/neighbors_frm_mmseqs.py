@@ -5,6 +5,7 @@ import dask
 import dask.bag as db
 import os
 import glob
+import tempfile
 
 # from process_gffs import gff2pandas
 # from process_gffs import get_protseq_frmFasta
@@ -42,9 +43,9 @@ def read_search_tsv(**kwargs):
     return mmseqs_grp_db,mmseqs
 
 
-def get_neigborhood(logger,args,**kwargs):
+def get_neigborhood(logger,args,tmpd,**kwargs):
     # this function gets neighborhoods of proteins based on position denoted in gff_df, filters out too big and too small neighborhoods
-    # condition: What if the same protein appears twice in a genome, but has different neighborhoods? They should have the same query
+    # condition: If the same protein appears twice in a genome, but has different neighborhoods? They should have the same query
 
     mmseqs_group = kwargs.get("mmseqs_groups",None)
     genome_query = kwargs.get("genome_query",None)
@@ -70,39 +71,51 @@ def get_neigborhood(logger,args,**kwargs):
         protein_ids = set([rec.id.split('|')[-1] for rec in pg.SeqIO.parse(protein_file,"fasta")]) 
 
     # subset gff for protein centers that we're interested in
-    logger.warning(f"Before size of gffdf: {gff_df.shape}")
+    # logger.warning(f"Before size of gffdf: {gff_df.shape}")
     vf_centers = gff_df[gff_df['protein_id'].isin(protein_ids)]
-    logger.warning(f"After size of gffdf: {vf_centers.shape}")
-    logger.debug(f"Total number of proteins to extract neighborhoods from {genome_query}: {len(vf_centers)}")
+    # logger.warning(f"After size of gffdf: {vf_centers.shape}")
 
-    #print(f"{len(vf_centers)} hits found in {gff.split('/')[-1]}")
     window = args.neighborhood_size/2
     neighborhoods = []
+    removed_neighborhoods = []
     max_neighbors_report = 2
     report = 0
-    for row in vf_centers.itertuples():
+    for row in vf_centers.itertuples(): # this adds a new neighborhood (neighborhood_df) to a list (neighborhoods)
+
+        # subset the genome (gff_df) for genes on the same contig and/or strand
         if args.head_on:
             gff_df_strand = gff_df[gff_df['seq_id'] == row.seq_id]
         else:
             gff_df_strand = gff_df[(gff_df['strand'] == row.strand) & (gff_df['seq_id'] == row.seq_id)]
         neighborhood_df = gff_df_strand.copy()
+
+        # further subset the genome (now neighborhood_df) for genes within the predefined neighborhood limits default +/- 20kb
         neighborhood_df = neighborhood_df[
             (neighborhood_df['start'] >= row.start - window) &
             (neighborhood_df['end'] <= row.end + window)]
         neighborhood_df['VF_center'] = row.protein_id
         neighborhood_df['gff_name'] = gff.split('/')[-1].split('_genomic.gff')[0].split('.gff')[0] # for compatibility with chop_genomes
 
-        if len(neighborhood_df) < args.min_prots: #neighborhood centers could be near a contig break causing really small neighborhoods, which isnt helpful info
+        # remove neighborhoods that don't fit specified conditions
+        if len(neighborhood_df) < args.min_prots: #neighborhood centers could be near a contig break causing really small neighborhoods, which isnt helpful info, remove these
+            removed_neighborhoods.append(neighborhood_df['VF_center'].iloc[0] + '!!!' + neighborhood_df['gff_name'].iloc[0]) # save this info for debugging later
             if report < max_neighbors_report:
                 logger.warning(f"Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are less than {args.min_prots} proteins") #maybe I should output this type of info to a text file
                 report +=1
             continue
-        if len(neighborhood_df) > args.max_prots:
+        if len(neighborhood_df) > args.max_prots: # glm can handle up to 30 proteins
+            removed_neighborhoods.append(neighborhood_df['VF_center'].iloc[0] + '!!!' + neighborhood_df['gff_name'].iloc[0])
             if report < max_neighbors_report:
                 logger.warning(f"Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are more than {args.max_prots} proteins")
                 report +=1
             continue
         neighborhoods.append(neighborhood_df)
+    
+    # save removed neighborhoods to a temporary text file for each partition, for analysis later
+    
+    tmpf = tempfile.NamedTemporaryFile(mode='w+t',prefix='protgff_',suffix='.txt',dir=tmpd,delete=False)
+    tmpf.writelines(f"{prot_gff}\n" for prot_gff in removed_neighborhoods)
+    tmpf.close()
     return neighborhoods
 
 def run_fasta_from_neighborhood(logger,args,dir_for_fasta,neighborhood,**kwargs):

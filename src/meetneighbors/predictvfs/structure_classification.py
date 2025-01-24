@@ -168,7 +168,7 @@ def alltopNhits_probs_threadable(query_rep,df,score_metric,lb):
     preds = np.sum(preds,axis=0) # should be a 1XNumberOfVFcats array
 
     if np.sum(preds) == 0:
-        print(f"--Getting no predictions for {query_rep}--")
+        print(f"--Getting no structural similarity to db for {query_rep}--")
     preds = preds/np.sum(preds) # normalize so that they add up to 1, and work for auc
 
     return [preds,query_rep]
