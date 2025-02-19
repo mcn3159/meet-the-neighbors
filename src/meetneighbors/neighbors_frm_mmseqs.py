@@ -1,11 +1,12 @@
-# import pandas as pd
+import pandas as pd
 import argparse
 import re
 import dask
+dask.config.set(scheduler='processes')
 import dask.bag as db
 import os
-import glob
 import tempfile
+from sklearn.cluster import AgglomerativeClustering
 
 # from process_gffs import gff2pandas
 # from process_gffs import get_protseq_frmFasta
@@ -95,6 +96,25 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
             (neighborhood_df['end'] <= row.end + window)]
         neighborhood_df['VF_center'] = row.protein_id
         neighborhood_df['gff_name'] = gff.split('/')[-1].split('_genomic.gff')[0].split('.gff')[0] # for compatibility with chop_genomes
+
+        if args.intergenic:
+            if neighborhood_df.shape[0] < 2:
+                continue
+
+            clustering = AgglomerativeClustering(linkage='single', distance_threshold=args.intergenic, n_clusters= None).fit(
+                neighborhood_df[['start','end']].to_numpy())
+            
+            # combine cluster labels w/ where each neighborhood start stop was found, indices are the same
+            neighborhood_df = pd.concat([neighborhood_df,
+                        pd.DataFrame(clustering.labels_,columns=['clu_label'],index=neighborhood_df.index)],
+                        axis=1)
+            
+            # get the cluster label of the VF center
+            clustr_labl_tokeep = neighborhood_df.loc[neighborhood_df['protein_id']==row.protein_id, 'clu_label'].iloc[0]
+
+            # only keep genes that were within the distance cutoff specified
+            neighborhood_df[neighborhood_df['clu_label'] == clustr_labl_tokeep]
+            
 
         # remove neighborhoods that don't fit specified conditions
         if len(neighborhood_df) < args.min_prots: #neighborhood centers could be near a contig break causing really small neighborhoods, which isnt helpful info, remove these

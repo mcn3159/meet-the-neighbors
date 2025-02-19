@@ -66,27 +66,30 @@ def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb,removed_
 def reduce_overlap(mmseqs_clust_sub,window):
     # reduce overlapping neighborhood given window
     # take representative (close to median) of neighborhoods who's start positions are within window
-    similar_range_neighbors = {}
-    for ran in set(mmseqs_clust_sub[1].sort_values(by='locus_range').locus_range):
-        if len(similar_range_neighbors) == 0: 
-            similar_range_neighbors[int(ran.split("-")[0])] = [ran]
-            continue
-        
-        keys_array = np.array(list(similar_range_neighbors.keys())) # get an array of the neighborhood start positions
-        keys_array_sub = np.absolute(keys_array - int(ran.split("-")[0])) < window # group new neigborhoods w/ keys in the same range
-        res_ind = (keys_array_sub).nonzero() # get position of keys within the range of query neighborhood
-        if np.size(res_ind) == 1:
-            similar_range_neighbors[keys_array[res_ind[0]][0]].append(ran)
-        
-        else:
-            similar_range_neighbors[int(ran.split("-")[0])] = [ran]
-
-    similar_range_neighbors = {int(np.quantile([int(r.split("-")[0]) for r in v],q=.5,method="lower")):v for k,v in similar_range_neighbors.items()} # Want the overlapping neighborhood reps to be the middle neighborhood
     mmseqs_clust_sub_copy = mmseqs_clust_sub[1].copy()
-    mmseqs_clust_sub_copy["neighborhood_start"] = mmseqs_clust_sub_copy["locus_range"].str.split("-").str[0]
-    mmseqs_clust_sub_copy["neighborhood_start"] = pd.to_numeric(mmseqs_clust_sub_copy["neighborhood_start"])
-    mmseqs_clust_sub_copy = mmseqs_clust_sub_copy[mmseqs_clust_sub_copy['neighborhood_start'].isin(list(similar_range_neighbors.keys()))]
-    return mmseqs_clust_sub_copy
+
+    # each neighborhood has a respective locus range, we're gonna make 2 new columns w/ it for clustering
+    mmseqs_clust_sub_copy[['nn_start','nn_stop']] = mmseqs_clust_sub_copy['locus_range'].str.split('-',expand=True).astype(int)
+
+    # cluster neighborhoods with complete b/c we want minimize neighborhood loss
+    clustering = AgglomerativeClustering(linkage='complete', distance_threshold=window, n_clusters= None).fit(
+        mmseqs_clust_sub_copy[['nn_start','nn_stop']].to_numpy())
+    
+    # combine cluster labels w/ where each neighborhood start stop was found, indices are the same
+    clu_df = pd.concat([mmseqs_clust_sub_copy[['nn_start','nn_stop']],
+                        pd.DataFrame(clustering.labels_,columns=['clu_label'],index=mmseqs_clust_sub_copy.index)],
+                        axis=1)
+
+    # want the neighborhood closest to the median b/c that's most representaive?
+    # pd.loc op, pandas median will average if subset is even, get the value closest to average if so
+    med_nn_starts = list(clu_df.loc[clu_df.groupby('clu_label')['nn_start'].apply(lambda s: (s - s.median()).abs().idxmin())]['nn_start'])
+
+    # copy df rows weren't modified, inds are the same, let's get the inds of all the rows that match the criteria
+    inds_to_keep = mmseqs_clust_sub_copy[mmseqs_clust_sub_copy['nn_start'].isin(med_nn_starts)].index
+
+    # keeping mmseqs_clust_sub instead of copy b/c I don't want newly cereated columns
+    return mmseqs_clust_sub[1].loc[inds_to_keep]
+
 
 def select_multivf_neighborhoods(mmseqs_clust,loose_vf_search,logger):
     # get a list of neighborhoods containing more than one VF based off of an additional mmseqs search with looser search parameters than the previous one

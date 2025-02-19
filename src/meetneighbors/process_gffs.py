@@ -1,4 +1,4 @@
-import pandas
+import pandas as pd
 import numpy as np
 import gffpandas.gffpandas as gffpd
 import time

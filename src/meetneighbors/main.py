@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import warnings
 import dask
+dask.config.set(scheduler='processes')
 import dask.bag as db
 import dask.dataframe as dd
 import time
@@ -61,6 +62,7 @@ def get_parser():
     extract_neighbors.add_argument("--mvn_cov","-mvn_c", type=float, required=False, default=0.8, help="Sequence coverage for 2nd mmseqs search in genomes")
     extract_neighbors.add_argument("-ho","--head_on",required=False,action="store_true",help="Extract neighborhoods with genes in opposite orientations")
     extract_neighbors.add_argument("--remove_temp",required=False,action="store_true",help="Remove temp directory created along with all of its contents")
+    extract_neighbors.add_argument("-ig","--intergenic",required=False,type=int,help="Set a maximum cutoff for the integenic distance of a neighborhood")
 
     comp_neighbors = subparsers.add_parser("compare_neighborhoods",help="Compare multiple neighborhood tsvs")
     comp_neighbors.add_argument('--neighborhood1','-n1',type=str,required=True,help="Give full path to 1st neighborhood to compare")
@@ -109,7 +111,7 @@ def get_parser():
     predictvf.add_argument("--qtmcutoff",type=int,default=0.6,help="qTMscore cutoff for defining a structure-based hit, ignores qcovcutoff")
     predictvf.add_argument("--fs_qcovcutoff",type=int,default=0.75,help="foldseek search qcov cutoff for defining a structure-based hit")
     predictvf.add_argument("--lddtcutoff",type=int,default=0.75,help="lddt cutoff for defining a structure-based hit")
-    predictvf.add_argument("--include_structhits",type=str,required=False,help="Give path to neighborhood output folder to compute number of structural hits per neighborhood")
+    predictvf.add_argument("--include_structhits",type=str,required=False,help="Give path to neighborhood output folder to compute number of structural hits per neighborhood") # should change the name of this arg and make non-optional
     predictvf.add_argument("--neighborhood_size","-ns",type=int, required=False, default=20000, help="Size in bp of neighborhood to extract. 10kb less than start, and 10kb above end of center DNA seq")
     predictvf.add_argument("--min_prots","-mip",type=int, required=False, default=3, help="Minimum number of proteins in neighborhood")
     predictvf.add_argument("--max_prots","-map",type=int, required=False, default=30, help="Maximum number of proteins in neighborhood")
@@ -171,12 +173,12 @@ def workflow(parser):
         ,check=True)
             
             if (not os.path.isfile(f"{args.out}combined_fastas_clust_res.tsv") and args.resume) or (not args.resume):
-                logger.debug("Pulling neighborhoods...")
                 mmseqs_grp_db,mmseqs_search = n.read_search_tsv(vfdb=args.from_vfdb,input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
                 logger.info(f"Number of query proteins with hits: {len(set(mmseqs_search['query']))}")
 
                 tmpd = tempfile.mkdtemp(dir=args.out,prefix='tempdir_')
 
+                logger.debug(f"Pulling neighborhoods with {args.threads} threads...")
                 neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, mmseqs_groups = mmseqs_grp_db,head_on=args.head_on)
                 
                 tmpfiles = glob.glob(tmpd+'/*') # should probably use pathlib for this or os.path.join?
