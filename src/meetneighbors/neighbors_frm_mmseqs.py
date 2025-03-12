@@ -51,9 +51,13 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
     mmseqs_group = kwargs.get("mmseqs_groups",None)
     genome_query = kwargs.get("genome_query",None)
     args.head_on = kwargs.get("head_on",None) # to be compatible with chop genome
+    args.intergenic = kwargs.get("intergenic_cutoff",None) # to be compatible with chop genome
 
     if mmseqs_group:  
         gff = args.genomes + mmseqs_group[1].tset.iloc[0].split('protein.faa')[0] + 'genomic.gff'
+        if not os.path.isfile(gff):
+            gff = args.genomes + mmseqs_group[1].tset.iloc[0].split('protein.fa')[0] + 'genomic.gff' # might cause issues later but im running w/ the assumption that protein files end with .faa or .fasta
+            assert os.path.isfile(gff), f"Matching gff file for {gff}  not found"
         gff_df = pg.gff2pandas(gff)
         protein_ids = list(mmseqs_group[1].target)
     
@@ -65,16 +69,21 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
         # check that we have a protein file with an appropriate suffix
         protein_file = gff.split('.gff')[0] + ".faa"
         if not os.path.isfile(protein_file):
-            protein_file = gff.split('.gff')[0] + "fasta"
+            protein_file = gff.split('.gff')[0] + ".fasta"
             assert os.path.isfile(protein_file), f"Protein file for {genome_query} with .faa or .fasta suffix not found"
 
         # get list of protein ids to then use on gff,subset protein id to match what's in gff_df
         protein_ids = set([rec.id.split('|')[-1] for rec in pg.SeqIO.parse(protein_file,"fasta")]) 
 
     # subset gff for protein centers that we're interested in
-    # logger.warning(f"Before size of gffdf: {gff_df.shape}")
+    logger.warning(f"Before size of gffdf: {gff_df.shape}")
     vf_centers = gff_df[gff_df['protein_id'].isin(protein_ids)]
-    # logger.warning(f"After size of gffdf: {vf_centers.shape}")
+    # if no vf centers are found in the gffdf try adjusting the protid names
+    if len(vf_centers) == 0:
+        gff_df['protein_id'] = gff_df['protein_id'].str.split(':').str[-1]
+        vf_centers = gff_df[gff_df['protein_id'].isin(protein_ids)]
+
+    logger.warning(f"After size of gffdf: {vf_centers.shape}")
 
     window = args.neighborhood_size/2
     neighborhoods = []
@@ -98,8 +107,10 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
         neighborhood_df['gff_name'] = gff.split('/')[-1].split('_genomic.gff')[0].split('.gff')[0] # for compatibility with chop_genomes
 
         if args.intergenic:
-            if neighborhood_df.shape[0] < 2:
+            if neighborhood_df.shape[0] < 2: # skip if there's no proteins found in the neighborhood besides the center
                 continue
+            
+            og_shape = neighborhood_df.shape
 
             clustering = AgglomerativeClustering(linkage='single', distance_threshold=args.intergenic, n_clusters= None).fit(
                 neighborhood_df[['start','end']].to_numpy())
@@ -113,7 +124,8 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
             clustr_labl_tokeep = neighborhood_df.loc[neighborhood_df['protein_id']==row.protein_id, 'clu_label'].iloc[0]
 
             # only keep genes that were within the distance cutoff specified
-            neighborhood_df[neighborhood_df['clu_label'] == clustr_labl_tokeep]
+            neighborhood_df = neighborhood_df[neighborhood_df['clu_label'] == clustr_labl_tokeep]
+            logger.warning(f"{og_shape[0] - neighborhood_df.shape[0]} proteins remove from neighborhood based of INTERGENIC distance...")
             
 
         # remove neighborhoods that don't fit specified conditions

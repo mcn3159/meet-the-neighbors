@@ -1,5 +1,6 @@
 import argparse
 import sys
+import tempfile
 import subprocess
 import pandas as pd
 import numpy as np
@@ -31,10 +32,17 @@ from meetneighbors.predictvfs.glm.gLM import *
 
 
 def pull_neighborhoodsdf(args,logger):
-    genome_queries = [genome.split('/')[-1].split('.gff')[0] for genome in glob.glob(args.genomes + '*') if '.gff' in genome]
-    neighborhood_db = db.map(n.get_neigborhood,logger,args,genome_query = db.from_sequence(genome_queries,npartitions=args.threads))
-    neighborhood_db = neighborhood_db.flatten()
+    if args.query_fasta:
+        mmseqs_grp_db,mmseqs_search = n.read_search_tsv(input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
+        logger.info(f"Number of query proteins found in genomes: {len(set(mmseqs_search['query']))}")
+        tmpd = tempfile.mkdtemp(dir=args.out,prefix='tempdir_')
+        neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, mmseqs_groups = mmseqs_grp_db) # might want to fix the potential issue of neighborhoods getting removed if they don't meet minimum criteria
+    else:
+        logger.debug("Chopping up some genomes...")
+        genome_queries = [genome.split('/')[-1].split('.gff')[0] for genome in glob.glob(args.genomes + '*') if '.gff' in genome]
+        neighborhood_db = db.map(n.get_neigborhood,logger,args,genome_query = db.from_sequence(genome_queries,npartitions=args.threads))
 
+    neighborhood_db = neighborhood_db.flatten()
     n.run_fasta_from_neighborhood(logger,args,dir_for_fasta=args.genomes,neighborhood=neighborhood_db,
                                     out_folder=args.out,threads=args.threads)
     
@@ -53,7 +61,7 @@ def pull_neighborhoodsdf(args,logger):
     mmseqs_clust = pd.DataFrame([allids,allids]).T
     mmseqs_clust.columns = ['rep','locus_tag'] 
     mmseqs_clust = pn.prep_cluster_tsv(mmseqs_clust,logger)
-    logger.debug(f"Total number of neighborhoods: {len(mmseqs_clust['neighborhood_name'])}")
+    logger.debug(f"Total number of neighborhoods: {len(set(mmseqs_clust['neighborhood_name']))}")
 
     # b/c we didnt do an initial search all VF centers are the queries for glm input purposes
     mmseqs_clust['query'] = mmseqs_clust['VF_center'].copy() 

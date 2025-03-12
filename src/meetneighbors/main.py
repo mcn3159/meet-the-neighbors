@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 import warnings
 import dask
-dask.config.set(scheduler='processes')
 import dask.bag as db
 import dask.dataframe as dd
 import time
@@ -15,6 +14,7 @@ import glob
 import logging
 import tempfile
 import sys
+# from dask.distributed import Client
 
 
 import meetneighbors.neighbors_frm_mmseqs as n
@@ -22,6 +22,7 @@ import meetneighbors.plot_map_neighborhood_res as pn
 import meetneighbors.compare_neighborhoods as c
 import meetneighbors.glm_input_frm_neighbors as glm
 import meetneighbors.compute_umap as cu
+import meetneighbors.ring_mmseqs as mm
 
 from meetneighbors.predictvfs import neighborhood_classification as nc
 from meetneighbors.predictvfs import structure_classification as sc
@@ -63,6 +64,7 @@ def get_parser():
     extract_neighbors.add_argument("-ho","--head_on",required=False,action="store_true",help="Extract neighborhoods with genes in opposite orientations")
     extract_neighbors.add_argument("--remove_temp",required=False,action="store_true",help="Remove temp directory created along with all of its contents")
     extract_neighbors.add_argument("-ig","--intergenic",required=False,type=int,help="Set a maximum cutoff for the integenic distance of a neighborhood")
+    extract_neighbors.add_argument("--gpu",required=False,type=int,help="Utilize N gpus")
 
     comp_neighbors = subparsers.add_parser("compare_neighborhoods",help="Compare multiple neighborhood tsvs")
     comp_neighbors.add_argument('--neighborhood1','-n1',type=str,required=True,help="Give full path to 1st neighborhood to compare")
@@ -102,9 +104,13 @@ def get_parser():
     compute_umap.add_argument('--legend',action="store_true",required=False,help="Show legend on umap plot")
 
     predictvf = subparsers.add_parser("predictvf",help="Predict functional categories of proteins given a their gff files and resprective protein fastas")
-    predictvf.add_argument("--genomes","-g", type=str, required=True, help="Give path to folder w/ proteins and gffs")
-    predictvf.add_argument("--threads", type=int,default=4, help="Number of threads")
-    predictvf.add_argument("--ngpus", type=int,default=0, help="Number of gpus to use for embedding making")
+    predictvf.add_argument("--query_fasta","-qf", type=str, required=False, default=None, help="Proteins to search and find neighborhoods for")
+    predictvf.add_argument("--seq_id","-s", type=float, required=False, default=0.9, help="Sequence identity for mmseqs search in genomes")
+    predictvf.add_argument("--cov","-c", type=float, required=False, default=0.9, help="Sequence coverage for mmseqs search in genomes")
+    predictvf.add_argument("--mem","-m", type=int, required=False, default=8, help="Memory")
+    predictvf.add_argument("--genomes","-g", type=str, required=True, help="Give path to folder w/ faas and gffs")
+    predictvf.add_argument("--threads",'-t', type=int,default=4, help="Number of threads")
+    predictvf.add_argument("--gpu", type=int,default=0, help="Number of gpus to use for embedding making")
     predictvf.add_argument("--glm_embeds",type=str,required=False,help="tsv file containing glm embeddings")
     predictvf.add_argument("--foldseek_structs",type=str,required=True,help="Directory containing foldseek db of query protein structures")
     predictvf.add_argument("--out","-o",type=str,help="Output directory")
@@ -141,9 +147,14 @@ def get_logger(subcommand,out):
 def workflow(parser):
     start_time = time.time()
     args = parser.parse_args()
-    
+    # client = Client(host='localhost',memory_limit=str(int(args.mem/args.threads))+"Gib")
+    dirs_l = check_dirs(args.out)
+    args.out = dirs_l[0]
+    if not os.path.exists(args.out): # check if output directory exists, if not create it
+        os.mkdir(args.out)
+
+
     if args.subcommand == "extract_neighbors":
-        assert os.path.isdir(args.out), "Output directory not found"
         dirs_l = check_dirs(args.genomes,args.out)
         args.genomes,args.out = dirs_l[0],dirs_l[1]
         faa_dir = f"{args.genomes}*.faa"
@@ -160,6 +171,10 @@ def workflow(parser):
                 if (not os.path.isfile(genomes_db) and args.resume) or (not args.resume):
                     logger.debug("Creating genome database with mmesqs...")
                     subprocess.run(f"mmseqs createdb {faa_dir} {genomes_db} -v 2",shell=True,check=True)
+                    if args.gpu:
+                        subprocess.run(f"mmseqs makepaddedseqdb {genomes_db} {genomes_db}_gpu --threads {args.threads}",shell=True,check=True)
+                        subprocess.run(f"rm {genomes_db}.*",shell=True,check=True) # base db file made from mmseqs is kept b/c if i rm it with the same strategy, I remove the gpu db as well
+                        genomes_db = f"{genomes_db}_gpu"
                     
             if (not os.path.isfile(f"{args.out}queryDB") and args.resume) or (not args.resume):
                 logger.debug("Creating query database with mmesqs...")
@@ -167,7 +182,10 @@ def workflow(parser):
 
             if (not os.path.isfile(f"{args.out}vfs_in_genomes.tsv") and args.resume) or (not args.resume):
                 logger.debug("Searching for queries in genome database with mmesqs...")
-                subprocess.run(f"mmseqs search {args.out}queryDB {genomes_db} {args.out}vfs_in_genomes {args.out}tmp_search --min-seq-id {args.seq_id} --cov-mode 0 -c {args.cov} -v 2 --split-memory-limit {int(args.mem * (2/3))}G --threads {args.threads}  --alignment-mode 3 --start-sens 1 --sens-steps 3 -s 7"
+                if args.gpu:
+                    subprocess.run(f"mmseqs search {args.out}queryDB {genomes_db} {args.out}vfs_in_genomes {args.out}tmp_search --min-seq-id {args.seq_id} --cov-mode 0 -c {args.cov} -v 2  --split-memory-limit {int(args.mem * (2/3))}G --alignment-mode 3 --gpu {args.gpu}",shell=True,check=True)
+                else:
+                    subprocess.run(f"mmseqs search {args.out}queryDB {genomes_db} {args.out}vfs_in_genomes {args.out}tmp_search --min-seq-id {args.seq_id} --cov-mode 0 -c {args.cov} -v 2 --split-memory-limit {int(args.mem * (2/3))}G --threads {args.threads} --alignment-mode 3 --start-sens 1 --sens-steps 3 -s 7"
         ,shell=True,check=True)
                 subprocess.run(["mmseqs", "convertalis", f"{args.out}queryDB", f"{genomes_db}", f"{args.out}vfs_in_genomes", f"{args.out}vfs_in_genomes.tsv", "--format-output", "query,target,evalue,pident,qcov,fident,alnlen,qheader,theader,tset,tsetid"] 
         ,check=True)
@@ -179,7 +197,7 @@ def workflow(parser):
                 tmpd = tempfile.mkdtemp(dir=args.out,prefix='tempdir_')
 
                 logger.debug(f"Pulling neighborhoods with {args.threads} threads...")
-                neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, mmseqs_groups = mmseqs_grp_db,head_on=args.head_on)
+                neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, mmseqs_groups = mmseqs_grp_db,head_on=args.head_on,intergenic_cutoff=args.intergenic)
                 
                 tmpfiles = glob.glob(tmpd+'/*') # should probably use pathlib for this or os.path.join?
                 for tmpf_path in tmpfiles:
@@ -212,6 +230,10 @@ def workflow(parser):
 
                 if args.red_olp:
                     # reduce the number of neighborhoods that overalp in terms of location on the same chromosome
+
+                    # first should remove neighborhoods with the same start and end positions.
+                    non_redundant_nns = list(mmseqs_clust.drop_duplicates(subset=["neighborhood_name"]).drop_duplicates(subset=["locus_range"])['neighborhood_name'])
+                    mmseqs_clust = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(non_redundant_nns)]
                     mmseqs_groups = list(mmseqs_clust.groupby(['gff', 'strand', 'seq_id'])) #cant groupby on its own with dask
                     mmseqs_groups = db.from_sequence(mmseqs_groups,npartitions=args.threads)
                     mmseqs_clust = db.map(pn.reduce_overlap,mmseqs_groups,window=args.olp_window)
@@ -257,6 +279,8 @@ def workflow(parser):
                     mmseqs_clust = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(multi_query_nn)]
                     mmseqs_clust = dd.from_pandas(mmseqs_clust,npartitions=args.threads)
 
+
+                # mmseqs_clust = client.persist(mmseqs_clust)
                 mmseqs_clust.to_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",index=False,sep="\t")
                 mmseqs_clust = mmseqs_clust.compute()
             
@@ -265,6 +289,7 @@ def workflow(parser):
                                                                                                                       'vf_category': 'object','vf_id': 'object',
                                                                                                                       'vf_name': 'object','vf_subcategory': 'object',
                                                                                                                       'vfdb_genus': 'object','vfdb_species': 'object'})
+                # mmseqs_clust = client.persist(mmseqs_clust)
                 mmseqs_clust = mmseqs_clust.compute() #reading with dask then computing is usually faster than read w/ pandas
                 logger.info(f"Size of mmseqs cluster results after merge with search results: {mmseqs_clust.shape}")
             
@@ -346,8 +371,6 @@ def workflow(parser):
     if args.subcommand == "compare_neighborhoods":
         logger = get_logger(args.subcommand,args.out)
         logger.debug("Comparing neighbors...")
-        dirs_l = check_dirs(args.out)
-        args.out = dirs_l[0]
         neighborhood1,neighborhood2 = pd.read_csv(args.neighborhood1,sep='\t'),pd.read_csv(args.neighborhood2,sep='\t')
         c.compare_neighborhood_entropy(neighborhood1,neighborhood2,label1=args.name1,label2=args.name2,out=args.out)
         c.compare_uniqhits_trends(neighborhood1,neighborhood2,label1=args.name1,label2=args.name2,out=args.out,write_table=True)
@@ -356,8 +379,8 @@ def workflow(parser):
     if args.subcommand == "chop-genome":
         logger = get_logger(args.subcommand,args.out)
         logger.debug("Chopping up some genomes...")
-        dirs_l = check_dirs(args.genomes,args.out)
-        args.genomes,args.out = dirs_l[0],dirs_l[1]
+        dirs_l = check_dirs(args.genomes)
+        args.genomes = dirs_l[0]
 
         genome_queries = [genome.split('/')[-1].split('.gff')[0] for genome in glob.glob(args.genomes + '*') if '.gff' in genome]
         logger.debug(f"All genome names to get neighborhoods from: {genome_queries}")
@@ -400,14 +423,17 @@ def workflow(parser):
     
     if args.subcommand == 'predictvf':
         logger = get_logger(args.subcommand,args.out)
-        logger.debug("Chopping up some genomes...")
-        dirs_l = check_dirs(args.genomes,args.out,args.include_structhits)
-        args.genomes,args.out,args.include_structhits = dirs_l[0],dirs_l[1],dirs_l[2]
+        dirs_l = check_dirs(args.genomes,args.include_structhits)
+        args.genomes,args.include_structhits = dirs_l[0],dirs_l[1]
         pkl_objs = l.load_pickle()
         
         if not args.glm_embeds:
             # if (args.resume and not os.path.isfile(f'{args.out}clust_res_in_neighborhoods/mmseqs_clust.tsv')) or (not args.resume):
-            logger.debug(f"Pulling neighborhoods from {len(glob.glob(args.genomes))/2} pairs of proteomes + gffs...")
+            if args.query_fasta:
+                mm.mmseqs_createdb(args)
+                mm.mmseqs_search(args)
+
+            logger.debug(f"Pulling neighborhoods...")
             mmseqs_clust,singular_combinedfasta = nc.pull_neighborhoodsdf(args,logger)
 
             # if (args.resume and os.path.isfile(f'{args.out}clust_res_in_neighborhoods/mmseqs_clust.tsv')) or (not args.resume):
@@ -420,10 +446,10 @@ def workflow(parser):
                 shutil.rmtree(args.out + glm_input_out) # switched to shutil and os here b/c subprocess wasn't finding directory to remove for whatever reason
                 os.mkdir(args.out + glm_input_out)
 
-                # create tsvs for glm inputs, one tsv per protein
-                logger.debug(f"Transforming collected {len(set(mmseqs_clust['query']))} proteins for input into the gLM...")
-                db.map(glm.get_glm_input,query=db.from_sequence(list(set(mmseqs_clust['query'])),npartitions=args.threads),
-                        mmseqs_clust=mmseqs_clust,combinedfasta=singular_combinedfasta,glm_input_dir=glm_input_out,logger=logger,args=args).compute()
+            # create tsvs for glm inputs, one tsv per protein
+            logger.debug(f"Transforming collected {len(set(mmseqs_clust['query']))} proteins for input into the gLM...")
+            db.map(glm.get_glm_input,query=db.from_sequence(list(set(mmseqs_clust['query'])),npartitions=args.threads),
+                    mmseqs_clust=mmseqs_clust,combinedfasta=singular_combinedfasta,glm_input_dir=glm_input_out,logger=logger,args=args).compute()
             
             glm_ouputs_out = "glm_outputs"
             subprocess.run(f"mkdir {args.out}{glm_ouputs_out}/",shell=True)
@@ -436,9 +462,9 @@ def workflow(parser):
             
             logger.debug(f"Computing gLM embeddings for: {len(files)} proteins")
 
-            files_db = db.from_sequence(files,npartitions=args.threads) #I dont think npartitions matters too much here, number of parllelizes calls will be equal to # of gpus available
+            files_db = db.from_sequence(files,npartitions=args.gpu*5) #I dont think npartitions matters too much here, number of parllelizes calls will be equal to # of gpus available
             
-            res_name = db.map(nc.create_glm_embeds,files_db,args.out+glm_ouputs_out,norm_factors=pkl_objs['norm.pkl'],PCA_LABEL=pkl_objs['pca.pkl'],ngpus=args.ngpus)
+            res_name = db.map(nc.create_glm_embeds,files_db,args.out+glm_ouputs_out,norm_factors=pkl_objs['norm.pkl'],PCA_LABEL=pkl_objs['pca.pkl'],ngpus=args.gpu)
             res_name = res_name.compute()
 
             mmseqs_clust = pd.read_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust.tsv",sep='\t')
@@ -502,14 +528,8 @@ def workflow(parser):
         logger.debug("Computing umap from gLM...")
 
         # make sure directories have a slash at the end
-        if len(args.out) > 1:
-            dirs_l = check_dirs(args.neighborhood_run,args.glm_out,args.glm_in,args.out)
-            neighborhood_dir,glm_out,glm_in,args.out = dirs_l[0],dirs_l[1],dirs_l[2],dirs_l[3]
-            if not os.path.exists(args.out):
-                os.mkdir(args.out)
-        else:
-            dirs_l = check_dirs(args.neighborhood_run,args.glm_out,args.glm_in)
-            neighborhood_dir,glm_out,glm_in = dirs_l[0],dirs_l[1],dirs_l[2]
+        dirs_l = check_dirs(args.neighborhood_run,args.glm_out,args.glm_in)
+        neighborhood_dir,glm_out,glm_in= dirs_l[0],dirs_l[1],dirs_l[2]
 
         mmseqs_clust = dd.read_csv(f"{neighborhood_dir}clust_res_in_neighborhoods/mmseqs_clust*.tsv",sep="\t",dtype={'query': 'object'})
         mmseqs_clust = mmseqs_clust.compute()

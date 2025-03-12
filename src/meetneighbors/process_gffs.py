@@ -19,6 +19,8 @@ def first_decorator(func):
 
 #@first_decorator
 def gff2pandas(gff):
+    # this function loads in a gff into a pandas dataframe, then subset for only necessary columns
+    
     try: 
         df = gffpd.read_gff3(gff)
         df = df.attributes_to_columns().loc[df.attributes_to_columns()['type']=='CDS']
@@ -55,15 +57,19 @@ def get_neighborhoodIDs_wGFF(specific_ids,df,window):
     return neighborhoods
 
 def get_protseq_frmFasta(logger,args,dir_for_fastas,neighborhood,fasta_per_neighborhood):
+    # this function defines the neighborhood naming schema and pulls neighborhood protein components from the fasta
+
     if dir_for_fastas[-1] != '/':
         dir_for_fastas += '/'
     try:
+        # define neighborhood naming schema
         neighborhood_name = f'{neighborhood.iloc[0].VF_center}!!!{neighborhood.iloc[0].gff_name}!!!{neighborhood.iloc[0].seq_id}!!!{neighborhood.iloc[0].start}-{neighborhood.iloc[-1].end}'
         fasta_dir = dir_for_fastas+neighborhood.iloc[0].gff_name+'_protein.faa'
 
         # if statement here is quick fix to make this function compatible with chop genome
         if not os.path.isfile(fasta_dir):
             fasta_dir = dir_for_fastas+neighborhood.iloc[0].gff_name+'.faa'
+            logger.warning(f"fasta to get proteins from in pg: {fasta_dir}")
             if not os.path.isfile(fasta_dir):
                 fasta_dir = dir_for_fastas+neighborhood.iloc[0].gff_name+'.fasta'
             rec = [SeqRecord(rec.seq,id=rec.id.split('|')[-1],description=rec.description) 
