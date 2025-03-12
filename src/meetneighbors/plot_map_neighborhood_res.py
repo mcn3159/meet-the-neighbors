@@ -1,6 +1,6 @@
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
+# import plotly.express as px
+# import plotly.graph_objects as go
 import math
 import argparse
 import warnings
@@ -13,9 +13,15 @@ from scipy.stats import entropy
 import dask.dataframe as dd
 
 def prep_cluster_tsv(mmseqs_res_dir,logger):
+
     #run for mmseqs clustered results
     #example res: '/Users/mn3159/bigpurple/data/pirontilab/Students/Madu/bigdreams_dl/neighborhood_call/neighbors_rand5k/neighbors_rand5k_clust_res.tsv'
-    mmseqs = dd.read_csv(mmseqs_res_dir,sep='\t',names=['rep','locus_tag'])
+
+    # if statement here is to allow this function to be able to handle an already read in dataframe
+    if isinstance(mmseqs_res_dir,str):
+        mmseqs = dd.read_csv(mmseqs_res_dir,sep='\t',names=['rep','locus_tag'])
+    else:
+        mmseqs = mmseqs_res_dir.copy() 
     
 
     mmseqs['VF_center'],mmseqs['gff'],mmseqs['seq_id'],mmseqs['locus_range'],mmseqs['start'], mmseqs['strand'] = mmseqs['locus_tag'].str.split('!!!').str[1],\
@@ -26,51 +32,86 @@ def prep_cluster_tsv(mmseqs_res_dir,logger):
                                                                                mmseqs['locus_tag'].str.split('!!!').str[6]
     mmseqs['neighborhood_name'] = mmseqs['VF_center'] + '!!!' + mmseqs['gff'] + '!!!' + mmseqs['seq_id'] + '!!!' + mmseqs['locus_range'] #VF_center in non_vf calls are simply just the query hits
     
-    mmseqs = mmseqs.compute()
+    if isinstance(mmseqs_res_dir,str):
+        mmseqs = mmseqs.compute()
     cluster_names = {rep:f"Cluster_{i}" for i,rep in enumerate(set(list(mmseqs.rep)))} #can't list and loop mmseqs col with dask, so I have to compute first
     mmseqs['cluster'] = mmseqs['rep'].map(cluster_names)
+    mmseqs['prot_gffname'] = mmseqs['locus_tag'].str.split('!!!').str[0] + '!!!' + mmseqs['gff']
 
-    logger.info(f"Size of mmseqs cluster results: {mmseqs.shape}")
+    logger.debug(f"Size of mmseqs cluster results: {mmseqs.shape}")
     return mmseqs
 
-def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb,logger):
+def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb,removed_neighborhoods,logger):
     # map query search hits to each target neighborhood in the cluster df
     # what if the same protein fasta has multiple proteins with the same name
-    prepped_mmseqs_clust['prot_gffname'] = prepped_mmseqs_clust['locus_tag'].str.split('!!!').str[0] + '!!!' + prepped_mmseqs_clust['gff']
+    
     mmseqs_search['gff_name'] = mmseqs_search.tset.str.split('_protein.faa').str[0]
     mmseqs_search['prot_gffname'] = mmseqs_search['target'] + '!!!' + mmseqs_search['gff_name']
+
+    # check how many query had all their neighborhoods removed b/c the minimum neighborhood conditions were not met
+    if removed_neighborhoods != None:
+        surviving_queries = len(set(mmseqs_search[~mmseqs_search['prot_gffname'].isin(removed_neighborhoods)]['query']))
+        logger.debug(f"Number of queries that didn't pass minimum neighborhood criteria: {len(set(mmseqs_search['query'])) - surviving_queries} out of {len(set(mmseqs_search['query']))} with hits")
+
     mmseqs_search.drop_duplicates(subset=['prot_gffname'],inplace=True) # to reduce mmseqs_clust shape explosion
+
+    # merge with how=left to keep NAs for proteins that part of the neighborhood but not a VF
     if vfdb:
-        mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','prot_gffname',"vf_name","vf_subcategory","vf_id","vf_category",'vfdb_species','vfdb_genus']],on='prot_gffname',how="left")
+        mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','prot_gffname',"vf_name","vf_subcategory","vf_id","vf_category",'vfdb_species','vfdb_genus']],on='prot_gffname',how="left") 
     else:
         mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','prot_gffname']],on='prot_gffname',how="left")
-    logger.info(f"Head of merge results: {mmseqs_clust.head()}")
+    logger.info(f"Size post search and cluster results merge: {mmseqs_clust.shape}")
     return mmseqs_clust
 
 def reduce_overlap(mmseqs_clust_sub,window):
     # reduce overlapping neighborhood given window
     # take representative (close to median) of neighborhoods who's start positions are within window
-    similar_range_neighbors = {}
-    for ran in set(mmseqs_clust_sub[1].sort_values(by='locus_range').locus_range):
-        if len(similar_range_neighbors) == 0: 
-            similar_range_neighbors[int(ran.split("-")[0])] = [ran]
-            continue
-        
-        keys_array = np.array(list(similar_range_neighbors.keys())) # get an array of the neighborhood start positions
-        keys_array_sub = np.absolute(keys_array - int(ran.split("-")[0])) < window # group new neigborhoods w/ keys in the same range
-        res_ind = (keys_array_sub).nonzero() # get position of keys within the range of query neighborhood
-        if np.size(res_ind) == 1:
-            similar_range_neighbors[keys_array[res_ind[0]][0]].append(ran)
-        
-        else:
-            similar_range_neighbors[int(ran.split("-")[0])] = [ran]
-
-    similar_range_neighbors = {int(np.quantile([int(r.split("-")[0]) for r in v],q=.5,method="lower")):v for k,v in similar_range_neighbors.items()} # Want the overlapping neighborhood reps to be the middle neighborhood
     mmseqs_clust_sub_copy = mmseqs_clust_sub[1].copy()
-    mmseqs_clust_sub_copy["neighborhood_start"] = mmseqs_clust_sub_copy["locus_range"].str.split("-").str[0]
-    mmseqs_clust_sub_copy["neighborhood_start"] = pd.to_numeric(mmseqs_clust_sub_copy["neighborhood_start"])
-    mmseqs_clust_sub_copy = mmseqs_clust_sub_copy[mmseqs_clust_sub_copy['neighborhood_start'].isin(list(similar_range_neighbors.keys()))]
-    return mmseqs_clust_sub_copy
+
+    # each neighborhood has a respective locus range, we're gonna make 2 new columns w/ it for clustering
+    mmseqs_clust_sub_copy[['nn_start','nn_stop']] = mmseqs_clust_sub_copy['locus_range'].str.split('-',expand=True).astype(int)
+
+    # cluster neighborhoods with complete b/c we want minimize neighborhood loss
+    clustering = AgglomerativeClustering(linkage='complete', distance_threshold=window, n_clusters= None).fit(
+        mmseqs_clust_sub_copy[['nn_start','nn_stop']].to_numpy())
+    
+    # combine cluster labels w/ where each neighborhood start stop was found, indices are the same
+    clu_df = pd.concat([mmseqs_clust_sub_copy[['nn_start','nn_stop']],
+                        pd.DataFrame(clustering.labels_,columns=['clu_label'],index=mmseqs_clust_sub_copy.index)],
+                        axis=1)
+
+    # want the neighborhood closest to the median b/c that's most representaive?
+    # pd.loc op, pandas median will average if subset is even, get the value closest to average if so
+    med_nn_starts = list(clu_df.loc[clu_df.groupby('clu_label')['nn_start'].apply(lambda s: (s - s.median()).abs().idxmin())]['nn_start'])
+
+    # copy df rows weren't modified, inds are the same, let's get the inds of all the rows that match the criteria
+    inds_to_keep = mmseqs_clust_sub_copy[mmseqs_clust_sub_copy['nn_start'].isin(med_nn_starts)].index
+
+    # keeping mmseqs_clust_sub instead of copy b/c I don't want newly cereated columns
+    return mmseqs_clust_sub[1].loc[inds_to_keep]
+
+
+def select_multivf_neighborhoods(mmseqs_clust,loose_vf_search,logger):
+    # get a list of neighborhoods containing more than one VF based off of an additional mmseqs search with looser search parameters than the previous one
+
+    mmseqs_clust_sub =  mmseqs_clust.dropna(subset=['query'])
+
+    og_hits = dict(zip(mmseqs_clust_sub['locus_tag'],mmseqs_clust_sub['query']))
+
+    # target are neighborhood lcs, queries are VFs
+    loose_vf_search = loose_vf_search[~loose_vf_search['target'].isin(og_hits.keys())] # can remove the locus tags in which we already know is a query based on an earlier .9 seqid and cov search 
+    lc_query_map = dict(zip(loose_vf_search['target'],loose_vf_search['query'])) # this dictionary will be used to map additional locus tags (target) that had some sort of seq similarity to a vf (query)
+
+    og_hits.update(lc_query_map) # combine new locus tag hits to a VF with the originals
+    mmseqs_clust['loose_query'] = mmseqs_clust['locus_tag'].map(og_hits) # new column gives an idea of what neighborhoods have multiple VFs mapped to it
+
+    print(mmseqs_clust.dropna(subset=['loose_query']).shape)
+    print(mmseqs_clust.dropna(subset=['loose_query']).head())
+    query_nn = mmseqs_clust.dropna(subset=['loose_query']).groupby('neighborhood_name')['loose_query'].apply(list).to_dict()
+    multi_query_nn = [nn for nn in query_nn if len(query_nn[nn])>1] # get neighborhood names that contain multiple VFs for future reference
+
+    logger.debug(f"Number of neighborhoods with mutiple VFs found: {len(multi_query_nn)} out of {len(query_nn)} total neighborhoods")
+    return mmseqs_clust,multi_query_nn
 
 def get_query_neighborhood_groups(mmseqs_clust,cluster_neighborhoods_by):
     # may cause the loss of some queries, which may have been filtered out in red_olp
@@ -103,7 +144,7 @@ class VF_neighborhoods:
 
     def calc_clusters(self): # DBSCAN was used for plotting, I don't use much anymore
         warnings.filterwarnings(action='ignore', category=DataConversionWarning)
-        db_res = DBSCAN(eps=self.dbscan_eps, min_samples=self.dbscan_min, metric='jaccard').fit(self.cdhit_sub_piv)
+        db_res = DBSCAN(eps=self.dbscan_eps, min_samples=self.dbscan_min, metric='jaccard').fit(self.cdhit_sub_piv) # using jaccard instead of hamming, b/c jaccard doesn't take into acct 0s (check Jul 8 2024 notes)
         return len(set(db_res.labels_)) - (1 if -1 in db_res.labels_ else 0), list(db_res.labels_).count(-1)
     
     def neighborhood_freqs(self): # get neighborhood entropies
@@ -116,8 +157,8 @@ class VF_neighborhoods:
             return list(self.cdhit_sub_piv.index)
         if threshold == 0: # for speed
             return list(self.cdhit_sub_piv.index)
-        # picked single linkage b/c I should get the most unique/least amount of clusters, classification performance is good w/ the most unique neighborhoods
-        neighborhood_clusters = AgglomerativeClustering(n_clusters=None,distance_threshold=threshold,metric="precomputed",linkage=linkage_method).fit(dist_matrix) 
+        # goal of clustering is to find really similar neighborhoods, those with a jaccard distance below a threshold
+        neighborhood_clusters = AgglomerativeClustering(n_clusters=None,distance_threshold=threshold,affinity="precomputed",linkage=linkage_method).fit(dist_matrix) # sklearn version 1.1.2 is older so keyword metric is replaced with affinity
         unique_clusters = np.unique(neighborhood_clusters.labels_)
         rep_neighborhood_indices = []
         for c in unique_clusters:
