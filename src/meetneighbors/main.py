@@ -64,7 +64,7 @@ def get_parser():
     extract_neighbors.add_argument("-ho","--head_on",required=False,action="store_true",help="Extract neighborhoods with genes in opposite orientations")
     extract_neighbors.add_argument("--remove_temp",required=False,action="store_true",help="Remove temp directory created along with all of its contents")
     extract_neighbors.add_argument("-ig","--intergenic",required=False,type=int,help="Set a maximum cutoff for the integenic distance of a neighborhood")
-    extract_neighbors.add_argument("--gpu",required=False,type=int,help="Utilize N gpus")
+    # extract_neighbors.add_argument("--gpu",required=False,type=int,help="Utilize N gpus")
 
     comp_neighbors = subparsers.add_parser("compare_neighborhoods",help="Compare multiple neighborhood tsvs")
     comp_neighbors.add_argument('--neighborhood1','-n1',type=str,required=True,help="Give full path to 1st neighborhood to compare")
@@ -171,10 +171,12 @@ def workflow(parser):
                 if (not os.path.isfile(genomes_db) and args.resume) or (not args.resume):
                     logger.debug("Creating genome database with mmesqs...")
                     subprocess.run(f"mmseqs createdb {faa_dir} {genomes_db} -v 2",shell=True,check=True)
-                    if args.gpu:
-                        subprocess.run(f"mmseqs makepaddedseqdb {genomes_db} {genomes_db}_gpu --threads {args.threads}",shell=True,check=True)
-                        subprocess.run(f"rm {genomes_db}.*",shell=True,check=True) # base db file made from mmseqs is kept b/c if i rm it with the same strategy, I remove the gpu db as well
-                        genomes_db = f"{genomes_db}_gpu"
+
+                    # mmseq gpu commented out until mmseqs group releases fix
+                    # if args.gpu:
+                    #     subprocess.run(f"mmseqs makepaddedseqdb {genomes_db} {genomes_db}_gpu --threads {args.threads}",shell=True,check=True)
+                    #     subprocess.run(f"rm {genomes_db}.*",shell=True,check=True) # base db file made from mmseqs is kept b/c if i rm it with the same strategy, I remove the gpu db as well
+                    #     genomes_db = f"{genomes_db}_gpu"
                     
             if (not os.path.isfile(f"{args.out}queryDB") and args.resume) or (not args.resume):
                 logger.debug("Creating query database with mmesqs...")
@@ -182,10 +184,10 @@ def workflow(parser):
 
             if (not os.path.isfile(f"{args.out}vfs_in_genomes.tsv") and args.resume) or (not args.resume):
                 logger.debug("Searching for queries in genome database with mmesqs...")
-                if args.gpu:
-                    subprocess.run(f"mmseqs search {args.out}queryDB {genomes_db} {args.out}vfs_in_genomes {args.out}tmp_search --min-seq-id {args.seq_id} --cov-mode 0 -c {args.cov} -v 2  --split-memory-limit {int(args.mem * (2/3))}G --alignment-mode 3 --gpu {args.gpu}",shell=True,check=True)
-                else:
-                    subprocess.run(f"mmseqs search {args.out}queryDB {genomes_db} {args.out}vfs_in_genomes {args.out}tmp_search --min-seq-id {args.seq_id} --cov-mode 0 -c {args.cov} -v 2 --split-memory-limit {int(args.mem * (2/3))}G --threads {args.threads} --alignment-mode 3 --start-sens 1 --sens-steps 3 -s 7"
+                # if args.gpu:
+                #     subprocess.run(f"mmseqs search {args.out}queryDB {genomes_db} {args.out}vfs_in_genomes {args.out}tmp_search --min-seq-id {args.seq_id} --cov-mode 0 -c {args.cov} -v 2  --split-memory-limit {int(args.mem * (2/3))}G --alignment-mode 3 --gpu {args.gpu}",shell=True,check=True)
+                # else:
+                subprocess.run(f"mmseqs search {args.out}queryDB {genomes_db} {args.out}vfs_in_genomes {args.out}tmp_search --min-seq-id {args.seq_id} --cov-mode 0 -c {args.cov} -v 2 --split-memory-limit {int(args.mem * (2/3))}G --threads {args.threads} --alignment-mode 3 --start-sens 1 --sens-steps 3 -s 7"
         ,shell=True,check=True)
                 subprocess.run(["mmseqs", "convertalis", f"{args.out}queryDB", f"{genomes_db}", f"{args.out}vfs_in_genomes", f"{args.out}vfs_in_genomes.tsv", "--format-output", "query,target,evalue,pident,qcov,fident,alnlen,qheader,theader,tset,tsetid"] 
         ,check=True)

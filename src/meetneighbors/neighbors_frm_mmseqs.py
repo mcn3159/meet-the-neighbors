@@ -125,7 +125,11 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
 
             # only keep genes that were within the distance cutoff specified
             neighborhood_df = neighborhood_df[neighborhood_df['clu_label'] == clustr_labl_tokeep]
-            logger.warning(f"{og_shape[0] - neighborhood_df.shape[0]} proteins remove from neighborhood based of INTERGENIC distance...")
+
+            # get an idea of the # of proteins removed from clustering
+            num_prots_removed = og_shape[0] - neighborhood_df.shape[0] 
+            if num_prots_removed > 0:
+                logger.warning(f"{num_prots_removed} proteins remove from neighborhood based of INTERGENIC distance...")
             
 
         # remove neighborhoods that don't fit specified conditions
