@@ -44,6 +44,7 @@ def prep_cluster_tsv(mmseqs_res_dir,logger):
 def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb,removed_neighborhoods,logger):
     # map query search hits to each target neighborhood in the cluster df
     # what if the same protein fasta has multiple proteins with the same name
+    # why do I merge by prot_gffname instead of just the prot name? I think there's a good reason, but I can't remember and didnt take good enough nnotes
     
     mmseqs_search['gff_name'] = mmseqs_search.tset.str.split('_protein.faa').str[0]
     mmseqs_search['prot_gffname'] = mmseqs_search['target'] + '!!!' + mmseqs_search['gff_name']
@@ -178,9 +179,9 @@ class VF_neighborhoods:
         return list(cdhit_sub_piv_sub.index) # indicies are neighborhood names
 
     def to_dict(self):
+        self.entropy = self.neighborhood_freqs() # want to calculate the entropy BEFORE create_dist_matrix() b/c that's where duplicates are removed
         self.dist_matrix, self.unique_hits = self.create_dist_matrix()
         self.clusters, self.noise = self.calc_clusters()
-        self.entropy = self.neighborhood_freqs()
         return {
             "query" : self.query_prot,
             "total_hits" : self.total_hits,
