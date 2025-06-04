@@ -20,18 +20,18 @@ def get_glm_input(**kwargs):
 
     pd.options.mode.chained_assignment = None
 
-    # only keep queries that made it through filtering in main.py to reduce computations   
-    if uniq_neighborhoods_d: # here for compatiblity with chop-genome, since it doesn't currently make this object
-
+    if neighborhood_res:
         if query not in list(neighborhood_res['query']): # skip if the vf was filtered out b/c of lack of hits decided by args.min_hits
             return
-        
+
+    # only keep queries that made it through filtering in main.py to reduce computations   
+    if uniq_neighborhoods_d: # here for compatiblity with chop-genome, since it doesn't currently make this object
         neighborhood_grp = uniq_neighborhoods_d[query]
-        mmseqs_clust = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(neighborhood_grp)]
     
     else:
-        mmseqs_clust = mmseqs_clust[mmseqs_clust['query']==query]
-        neighborhood_grp = list(mmseqs_clust['neighborhood_name'])
+        neighborhood_grp = set(mmseqs_clust[mmseqs_clust['query']==query]['neighborhood_name']) # i THINK this should be fine for chop-genome b/c the query col should be the same as the VF_center, so there shouldnt be neighborhoods w/ overlapping queries 
+
+    mmseqs_clust = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(neighborhood_grp)]
 
     mmseqs_clust['strand_neighborhood'] = mmseqs_clust['strand'] + mmseqs_clust['rep'] # each protein in neighborhoods will be reprented by its cluster representative
 

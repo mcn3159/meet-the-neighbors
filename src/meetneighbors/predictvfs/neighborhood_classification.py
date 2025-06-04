@@ -30,41 +30,62 @@ import meetneighbors.predictvfs.glm.batch_data as bd
 import meetneighbors.predictvfs.glm.glm_embed as glm_e
 from meetneighbors.predictvfs.glm.gLM import *
 
+import meetneighbors.ring_mmseqs as mm
 
-def pull_neighborhoodsdf(args,logger):
+
+def pull_neighborhoodsdf(args,tmpd,logger):
     if args.query_fasta:
-        mmseqs_grp_db,mmseqs_search = n.read_search_tsv(input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
-        logger.info(f"Number of query proteins found in genomes: {len(set(mmseqs_search['query']))}")
-        tmpd = tempfile.mkdtemp(dir=args.out,prefix='tempdir_')
-        neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, mmseqs_groups = mmseqs_grp_db) # might want to fix the potential issue of neighborhoods getting removed if they don't meet minimum criteria
+        if args.prot_genome_pairs:
+            mmseqs_search = pd.read_csv(args.prot_genome_pairs,sep="\t",names=['target','tset']) # this is a pseudo mmseqs search, b/c it will match requirements for future functions
+            mmseqs_search['query'] = mmseqs_search['target']
+            mmseqs_grp_db = list(mmseqs_search.groupby('tset'))
+            mmseqs_grp_db = db.from_sequence(mmseqs_grp_db,npartitions=args.threads)
+        else:
+            mmseqs_grp_db,mmseqs_search = n.read_search_tsv(input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
+            logger.info(f"Number of query proteins found in genomes: {len(set(mmseqs_search['query']))}")
+        neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, mmseqs_groups = mmseqs_grp_db,head_on=args.head_on,intergenic_cutoff=args.intergenic) # might want to fix the potential issue of neighborhoods getting removed if they don't meet minimum criteria
     else:
         logger.debug("Chopping up some genomes...")
-        genome_queries = [genome.split('/')[-1].split('.gff')[0] for genome in glob.glob(args.genomes + '*') if '.gff' in genome]
-        neighborhood_db = db.map(n.get_neigborhood,logger,args,genome_query = db.from_sequence(genome_queries,npartitions=args.threads))
+        genome_queries = [genome.split('/')[-1].split('genomic.gff')[0] for genome in glob.glob(args.genomes + '*.gff')]
+        genome_query_db = db.from_sequence(genome_queries,npartitions=args.threads)
+        neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, genome_query = genome_query_db,head_on=args.head_on,intergenic_cutoff=args.intergenic)
 
     neighborhood_db = neighborhood_db.flatten()
     n.run_fasta_from_neighborhood(logger,args,dir_for_fasta=args.genomes,neighborhood=neighborhood_db,
                                     out_folder=args.out,threads=args.threads)
     
-    # grab all the proteins found from all neighborhoods, to then send to a dataframe with neighborhood id info
-    combinedfastas = glob.glob(f"{args.out}combined_fasta_partition*")
-    singular_combinedfasta = f"{args.out}combined.fasta"
-    with open(singular_combinedfasta,"w") as outfile:
-        for fasta in combinedfastas:
-            records = glm.SeqIO.parse(fasta, "fasta")
-            glm.SeqIO.write(records, outfile, "fasta")
+    if args.cluster: # need the mmseqs_search object from a query fasta from this work
+        logger.debug("Clustering proteins found in all neighborhoods...")
+        mm.mmseqs_cluster(args)
+        singular_combinedfasta = f"{args.out}combined_fastas_clust_rep.fasta" # to match inputs into glm_input_frm_neighbors.py
+        mmseqs_clust = pn.prep_cluster_tsv(f"{args.out}combined_fastas_clust_res.tsv",logger)
+        if args.query_fasta:
+            mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search,vfdb=None,removed_neighborhoods=None,logger=logger) # need to fix removed_neighborhoods later
+            mmseqs_clust = mmseqs_clust.compute()
+        else:
+            mmseqs_clust['query'] = mmseqs_clust['gff'].copy() 
+
+    else:
+        # grab all the proteins found from all neighborhoods, to then send to a dataframe with neighborhood id info
+        combinedfastas = glob.glob(f"{args.out}combined_fasta_partition*")
+        singular_combinedfasta = f"{args.out}combined.fasta"
+        with open(singular_combinedfasta,"w") as outfile:
+            for fasta in combinedfastas:
+                records = glm.SeqIO.parse(fasta, "fasta")
+                glm.SeqIO.write(records, outfile, "fasta")
 
         # i think its faster to open the singular combined fasta and loop once, then looping through the records of each partition, didnt test this tho!
-    allids = [rec.id for rec in glm.SeqIO.parse(singular_combinedfasta,"fasta")]
+        allids = [rec.id for rec in glm.SeqIO.parse(singular_combinedfasta,"fasta")]
 
-    # simulate an mmseqs clustering df output without actually clustering proteins, so that written functions work
-    mmseqs_clust = pd.DataFrame([allids,allids]).T
-    mmseqs_clust.columns = ['rep','locus_tag'] 
-    mmseqs_clust = pn.prep_cluster_tsv(mmseqs_clust,logger)
+        # simulate an mmseqs clustering df output without actually clustering proteins, so that written functions work
+        mmseqs_clust = pd.DataFrame([allids,allids]).T
+        mmseqs_clust.columns = ['rep','locus_tag'] 
+
+        mmseqs_clust = pn.prep_cluster_tsv(mmseqs_clust,logger)
+        # b/c we didnt do an initial search all VF centers are the queries for glm input purposes. This will end up creating a lot of glm_inputs
+        mmseqs_clust['query'] = mmseqs_clust['VF_center'].copy() 
+
     logger.debug(f"Total number of neighborhoods: {len(set(mmseqs_clust['neighborhood_name']))}")
-
-    # b/c we didnt do an initial search all VF centers are the queries for glm input purposes
-    mmseqs_clust['query'] = mmseqs_clust['VF_center'].copy() 
     subprocess.run(f"mkdir {args.out}clust_res_in_neighborhoods",shell=True,check=True)
     mmseqs_clust.to_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust.tsv",sep="\t",index=False)
 
@@ -138,9 +159,10 @@ def create_glm_embeds(f,glm_outputs_path,norm_factors,PCA_LABEL,ngpus):
         position_embedding_type = pos_emb,
     )
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    print(device,flush=True)
     model = gLM(config)
     model.load_state_dict(torch.load(glm_model, map_location=device),strict=False)
-    glm_e.run_glm_embeds(model,pkg_data_dir=batched_dir,glm_embed_output_path=f'{glm_outputs_path}/{res_name}/results',device=device,ngpus=ngpus)
+    glm_e.run_glm_embeds(model,pkg_data_dir=batched_dir,glm_embed_output_path=f'{glm_outputs_path}/{res_name}/results',device=device,ngpus=ngpus,batch_size=200)
     return f
 
 def get_embed_preds(embeds,model_weights,lb,args): # might want to put lb into the argparse

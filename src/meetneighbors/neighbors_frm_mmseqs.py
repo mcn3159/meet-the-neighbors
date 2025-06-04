@@ -62,14 +62,14 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
         protein_ids = list(mmseqs_group[1].target)
     
     if genome_query:
-        gff = args.genomes + genome_query + '.gff'
+        gff = args.genomes + genome_query + 'genomic.gff'
         gff_df = pg.gff2pandas(gff)
         gff_df['protein_id'] = gff_df['protein_id'].str.split(':').str[-1] # remove weird characters in protein id
 
         # check that we have a protein file with an appropriate suffix
-        protein_file = gff.split('.gff')[0] + ".faa"
+        protein_file = gff.split('genomic.gff')[0] + "protein.faa"
         if not os.path.isfile(protein_file):
-            protein_file = gff.split('.gff')[0] + ".fasta"
+            protein_file = gff.split('genomic.gff')[0] + "protein.fasta"
             assert os.path.isfile(protein_file), f"Protein file for {genome_query} with .faa or .fasta suffix not found"
 
         # get list of protein ids to then use on gff,subset protein id to match what's in gff_df

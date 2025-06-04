@@ -4,15 +4,12 @@ import subprocess
 import argparse
 import numpy as np
 import pandas as pd
+from statistics import geometric_mean
 import pickle as pkl
-import glob
-from Bio import SeqIO
+from sklearn.preprocessing import MinMaxScaler # type: ignore
 import time
-import tqdm
+import tqdm # type: ignore
 import importlib.resources
-
-import dask
-import dask.bag as db
 
 
 # def aa2foldseek(args,path_to_spacedust):
@@ -25,13 +22,13 @@ def foldseek_search(args):
     foldseek_search_out = "foldseek_search_output" # directory for the foldseek search results
     subprocess.run(f"mkdir {args.out}{foldseek_search_out}/",shell=True)
 
-    concat_db = importlib.resources.path("meetneighbors.predictvfs.data.vf_ns_foldseekdb","sec_vf_rand8kNS_db")
-    subprocess.run(f"foldseek search {args.foldseek_structs} {concat_db} {args.out}{foldseek_search_out}/foldseek_search_res {args.out}{foldseek_search_out}/foldseek_tmp --lddt-threshold 0.4 --threads {args.threads} -a"
+    concat_db = importlib.resources.path("meetneighbors.predictvfs.data.vf_ns_foldseekdb","vfnsconcatdb")
+    subprocess.run(f"foldseek search {args.foldseek_structs} {concat_db} {args.out}{foldseek_search_out}/foldseek_search_res {args.out}{foldseek_search_out}/foldseek_tmp --exhaustive-search  --threads {args.threads} -a"
         ,shell=True,check=True)
     
-    subprocess.run(["foldseek", "convertalis", args.foldseek_structs, concat_db, f"{args.out}{foldseek_search_out}/foldseek_search_res", f"{args.out}{foldseek_search_out}/foldseek_search_res.tsv", "--format-output", "query,qheader,target,theader,prob,qlen,alnlen,qstart,pident,qcov,alntmscore,qtmscore,ttmscore,lddt,qset"])
+    subprocess.run(["foldseek", "convertalis", args.foldseek_structs, concat_db, f"{args.out}{foldseek_search_out}/foldseek_search_res", f"{args.out}{foldseek_search_out}/foldseek_search_res.tsv", "--format-output", "query,qheader,target,theader,prob,qlen,alnlen,qstart,pident,qcov,alntmscore,qtmscore,ttmscore,lddt,bits,evalue"])
 
-    struct_search_raw = pd.read_csv(f"{args.out}{foldseek_search_out}/foldseek_search_res.tsv",sep="\t", names = ["query","qheader","target","theader","prob","alnlen","qlen","qstart","pident","qcov","alntmscore","qtmscore","ttmscore","lddt","qset"])
+    struct_search_raw = pd.read_csv(f"{args.out}{foldseek_search_out}/foldseek_search_res.tsv",sep="\t", names = ["query","qheader","target","theader","prob","qlen","alnlen","qstart","pident","qcov","alntmscore","qtmscore","ttmscore","lddt","bits","evalue"])
     return struct_search_raw
 
 
@@ -121,8 +118,10 @@ def format_search(search_res,meta,vfquery_vfid,vfmap_df):
             raise ValueError(f"Meta param: {m} not an appropriate format, options are {meta_options}")
             
         search_res[i] = df
-            
-    return pd.concat(search_res)
+    
+    search_res = pd.concat(search_res)
+    search_res['mean_score'] = search_res['bits'] * geometric_mean(search_res['qtmscore'] * search_res['lddt'])
+    return search_res
 
 def format_searchlabels(search_res):
     # add additional functional labels to VF hits that don't have a subcat functional label, ignore categories that we didnt train
@@ -174,17 +173,24 @@ def alltopNhits_probs_threadable(query_rep,df,score_metric,lb):
     return [preds,query_rep]
 
 def format_strucpreds(pred_raw,lb):
-    # sent structure predictions to a dataframe and map back query protein labels
+    # scale structure predictions and to a dataframe, then map back query protein labels
 
     struct_preds = pd.DataFrame(pred_raw)
     struct_preds_expanded = pd.DataFrame(struct_preds[struct_preds.columns[0]].tolist(),index=struct_preds.index)
-    struct_preds_expanded = pd.concat([struct_preds_expanded,struct_preds.iloc[:,1]],axis=1)
 
+    # scale structure-based predictions so the LR ensemble model has an easier time training
+    scaler = MinMaxScaler()
+    scaler.fit(struct_preds_expanded.values)
+    struct_predictions_scaled = scaler.transform(struct_preds_expanded.values)
+    struct_predictions_scaled = pd.concat([pd.DataFrame(struct_predictions_scaled),struct_preds.iloc[:,1]],axis=1)
+    print("struct predictions scaled post concat (line 185)", struct_predictions_scaled.head(),flush=True)
+    
     # get names of of columns in predictions
     col_names = [cat for cat in lb.classes_]
     col_names.append('query')
-    struct_preds_expanded.columns = col_names
-    return struct_preds_expanded
+    struct_predictions_scaled.columns = col_names
+    print("struct predictions scaled post concat with col names (line 191)", struct_predictions_scaled.head(),flush=True)
+    return struct_predictions_scaled
 
 # call spacedust
 
