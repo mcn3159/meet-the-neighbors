@@ -1,6 +1,7 @@
 import pandas as pd
 import argparse
 import re
+import glob
 import dask
 dask.config.set(scheduler='processes')
 import dask.bag as db
@@ -53,24 +54,32 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
     args.head_on = kwargs.get("head_on",None) # to be compatible with chop genome
     args.intergenic = kwargs.get("intergenic_cutoff",None) # to be compatible with chop genome
 
+    def get_gff_prot_filenames(genome_query,args):
+        # gff = args.genomes + genome_query + 'genomic.gff'
+        gps = glob.glob(args.genomes + genome_query + '*') # if genome_query = GCFblabla_protein.fa* or genome_query = GCFblabla.gff 
+        if len(gps) == 1:
+            gps = glob.glob(args.genomes + genome_query.split('.fa')[0] + '*') # if genome_query = GCF.faa or genome_query = GCF.fasta, might fail if genome_query = GCF.fabas.gff
+        if len(gps) == 1:
+            genome_query = genome_query + '.gff'
+            gps = glob.glob(args.genomes + genome_query.split('genomic.gff')[0] + '*')
+        assert len(gps) == 2, f"Protein and gff file for {genome_query} could not be found. Make sure protein and gff pairs have the same file prefix, or ends with _protein.faa and _genomic.gff respectively"
+        
+        if '.gff' in gps[0]:
+            gff,protein = gps[0],gps[1]
+        else:
+            gff,protein = gps[1],gps[0]
+        return gff, protein
+
     if mmseqs_group:  
-        gff = args.genomes + mmseqs_group[1].tset.iloc[0].split('protein.faa')[0] + 'genomic.gff'
-        if not os.path.isfile(gff):
-            gff = args.genomes + mmseqs_group[1].tset.iloc[0].split('protein.fa')[0] + 'genomic.gff' # might cause issues later but im running w/ the assumption that protein files end with .faa or .fasta
-            assert os.path.isfile(gff), f"Matching gff file for {gff}  not found"
+        gff, protein = get_gff_prot_filenames(mmseqs_group[1].tset.iloc[0].split('protein.fa')[0],args)
         gff_df = pg.gff2pandas(gff)
         protein_ids = list(mmseqs_group[1].target)
     
     if genome_query:
-        gff = args.genomes + genome_query + 'genomic.gff'
+        gff, protein_file = get_gff_prot_filenames(genome_query,args)
+        # gff = args.genomes + genome_query + 'genomic.gff'
         gff_df = pg.gff2pandas(gff)
         gff_df['protein_id'] = gff_df['protein_id'].str.split(':').str[-1] # remove weird characters in protein id
-
-        # check that we have a protein file with an appropriate suffix
-        protein_file = gff.split('genomic.gff')[0] + "protein.faa"
-        if not os.path.isfile(protein_file):
-            protein_file = gff.split('genomic.gff')[0] + "protein.fasta"
-            assert os.path.isfile(protein_file), f"Protein file for {genome_query} with .faa or .fasta suffix not found"
 
         # get list of protein ids to then use on gff,subset protein id to match what's in gff_df
         protein_ids = set([rec.id.split('|')[-1] for rec in pg.SeqIO.parse(protein_file,"fasta")]) 

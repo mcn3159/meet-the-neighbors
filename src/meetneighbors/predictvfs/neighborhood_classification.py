@@ -11,6 +11,7 @@ from Bio.Seq import Seq
 from Bio import SeqIO
 import importlib.resources
 import pdb
+import os
 
 import dask
 import dask.bag as db
@@ -34,25 +35,32 @@ import meetneighbors.ring_mmseqs as mm
 
 
 def pull_neighborhoodsdf(args,tmpd,logger):
-    if args.query_fasta:
-        if args.prot_genome_pairs:
-            mmseqs_search = pd.read_csv(args.prot_genome_pairs,sep="\t",names=['target','tset']) # this is a pseudo mmseqs search, b/c it will match requirements for future functions
-            mmseqs_search['query'] = mmseqs_search['target']
-            mmseqs_grp_db = list(mmseqs_search.groupby('tset'))
-            mmseqs_grp_db = db.from_sequence(mmseqs_grp_db,npartitions=args.threads)
-        else:
-            mmseqs_grp_db,mmseqs_search = n.read_search_tsv(input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
-            logger.info(f"Number of query proteins found in genomes: {len(set(mmseqs_search['query']))}")
-        neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, mmseqs_groups = mmseqs_grp_db,head_on=args.head_on,intergenic_cutoff=args.intergenic) # might want to fix the potential issue of neighborhoods getting removed if they don't meet minimum criteria
-    else:
-        logger.debug("Chopping up some genomes...")
-        genome_queries = [genome.split('/')[-1].split('genomic.gff')[0] for genome in glob.glob(args.genomes + '*.gff')]
-        genome_query_db = db.from_sequence(genome_queries,npartitions=args.threads)
-        neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, genome_query = genome_query_db,head_on=args.head_on,intergenic_cutoff=args.intergenic)
 
-    neighborhood_db = neighborhood_db.flatten()
-    n.run_fasta_from_neighborhood(logger,args,dir_for_fasta=args.genomes,neighborhood=neighborhood_db,
-                                    out_folder=args.out,threads=args.threads)
+    if args.cluster:
+        file_to_check = f'{args.out}combined_fastas_clust_res.tsv'
+    else:
+        file_to_check = f"{args.out}combined.fasta"
+
+    if (args.resume and not os.path.isfile(file_to_check)) or (not args.resume):
+        if args.query_fasta:
+            if args.prot_genome_pairs:
+                mmseqs_search = pd.read_csv(args.prot_genome_pairs,sep="\t",names=['target','tset']) # this is a pseudo mmseqs search, b/c it will match requirements for future functions
+                mmseqs_search['query'] = mmseqs_search['target']
+                mmseqs_grp_db = list(mmseqs_search.groupby('tset'))
+                mmseqs_grp_db = db.from_sequence(mmseqs_grp_db,npartitions=args.threads)
+            else:
+                mmseqs_grp_db,mmseqs_search = n.read_search_tsv(input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
+                logger.info(f"Number of query proteins found in genomes: {len(set(mmseqs_search['query']))}")
+            neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, mmseqs_groups = mmseqs_grp_db,head_on=args.head_on,intergenic_cutoff=args.intergenic) # might want to fix the potential issue of neighborhoods getting removed if they don't meet minimum criteria
+        else:
+            logger.debug("Chopping up some genomes...")
+            genome_queries = [genome.split('/')[-1].split('.gff')[0] for genome in glob.glob(args.genomes + '*.gff')]
+            genome_query_db = db.from_sequence(genome_queries,npartitions=args.threads)
+            neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, genome_query = genome_query_db,head_on=args.head_on,intergenic_cutoff=args.intergenic)
+
+        neighborhood_db = neighborhood_db.flatten()
+        n.run_fasta_from_neighborhood(logger,args,dir_for_fasta=args.genomes,neighborhood=neighborhood_db,
+                                        out_folder=args.out,threads=args.threads)
     
     if args.cluster: # need the mmseqs_search object from a query fasta from this work
         logger.debug("Clustering proteins found in all neighborhoods...")
@@ -76,20 +84,35 @@ def pull_neighborhoodsdf(args,tmpd,logger):
 
         # i think its faster to open the singular combined fasta and loop once, then looping through the records of each partition, didnt test this tho!
         allids = [rec.id for rec in glm.SeqIO.parse(singular_combinedfasta,"fasta")]
-
         # simulate an mmseqs clustering df output without actually clustering proteins, so that written functions work
         mmseqs_clust = pd.DataFrame([allids,allids]).T
         mmseqs_clust.columns = ['rep','locus_tag'] 
-
         mmseqs_clust = pn.prep_cluster_tsv(mmseqs_clust,logger)
         # b/c we didnt do an initial search all VF centers are the queries for glm input purposes. This will end up creating a lot of glm_inputs
         mmseqs_clust['query'] = mmseqs_clust['VF_center'].copy() 
+    
+    nn_hash = None
+    if args.memory_optimize:
+        logger.debug("Save then remove duplicate neighborhoods. Map neighborhoods back via embeddings")
+        # sample_size = 10000
+        # sample_memory = mmseqs_clust.sample(sample_size).memory_usage(deep=True).sum()
+        # total_mem_bytes = (sample_memory / sample_size) * mmseqs_clust.shape[0]
+        # mmseqs_clust = mmseqs_clust.groupby(['gff', 'strand', 'seq_id']) #cant groupby on its own with dask
+        # mmseqs_clust = list(mmseqs_clust)
+        # mmseqs_clust = db.from_sequence(mmseqs_clust,npartitions=args.threads)
+        # mmseqs_clust = db.map(pn.reduce_overlap,mmseqs_clust,window=args.olp_window).compute()
+        # mmseqs_clust = pd.concat(mmseqs_clust)
+        logger.debug(f"Total number of neighborhoods pre-hash: {len(set(mmseqs_clust['neighborhood_name']))}")
+        
 
-    logger.debug(f"Total number of neighborhoods: {len(set(mmseqs_clust['neighborhood_name']))}")
+        mmseqs_clust, nn_hash = pn.hash_neighborhoods(mmseqs_clust)
+        pkl.dump(nn_hash,open(f'{args.out}nnhash_mapping.obj','wb'))
+
+    logger.debug(f"Total number of neighborhoods post-hash: {len(set(mmseqs_clust['neighborhood_name']))}")
     subprocess.run(f"mkdir {args.out}clust_res_in_neighborhoods",shell=True,check=True)
     mmseqs_clust.to_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust.tsv",sep="\t",index=False)
 
-    return mmseqs_clust,singular_combinedfasta
+    return mmseqs_clust, singular_combinedfasta, nn_hash
 
 def checkXle(fasta_recs):
     # pLM used for gLM doesn't have a token for J amino acids (or Xle) or replace w/ the most similar, Leucine
@@ -120,7 +143,7 @@ def get_plm_embeds(glm_inputs_path,glm_outputs_path):
         pdb.set_trace()
     return
 
-def create_glm_embeds(f,glm_outputs_path,norm_factors,PCA_LABEL,ngpus):
+def create_glm_embeds(f,glm_outputs_path,norm_factors,PCA_LABEL,ngpus,bs):
     # need to incorporate pkl files from glm (norm and pca.pkl)
     # batch_data_path = importlib.resources.path("meetneighbors.predictvfs.glm","batch_data.py")
     glm_model = importlib.resources.path("meetneighbors.predictvfs.glm.model","glm.bin")
@@ -162,7 +185,7 @@ def create_glm_embeds(f,glm_outputs_path,norm_factors,PCA_LABEL,ngpus):
     print(device,flush=True)
     model = gLM(config)
     model.load_state_dict(torch.load(glm_model, map_location=device),strict=False)
-    glm_e.run_glm_embeds(model,pkg_data_dir=batched_dir,glm_embed_output_path=f'{glm_outputs_path}/{res_name}/results',device=device,ngpus=ngpus,batch_size=200)
+    glm_e.run_glm_embeds(model,pkg_data_dir=batched_dir,glm_embed_output_path=f'{glm_outputs_path}/{res_name}/results',device=device,ngpus=ngpus,batch_size=bs)
     return f
 
 def get_embed_preds(embeds,model_weights,lb,args): # might want to put lb into the argparse

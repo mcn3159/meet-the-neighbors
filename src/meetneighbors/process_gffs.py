@@ -69,9 +69,10 @@ def get_protseq_frmFasta(logger,args,dir_for_fastas,neighborhood,fasta_per_neigh
         # if statement here is quick fix to make this function compatible with chop genome
         if not os.path.isfile(fasta_dir):
             fasta_dir = dir_for_fastas+neighborhood.iloc[0].gff_name+'.faa'
-            logger.warning(f"fasta to get proteins from in pg: {fasta_dir}")
+            # logger.warning(f"fasta to get proteins from in pg: {fasta_dir}")
             if not os.path.isfile(fasta_dir):
                 fasta_dir = dir_for_fastas+neighborhood.iloc[0].gff_name+'.fasta'
+                assert os.path.isfile(fasta_dir), f"Protein file for {dir_for_fastas+neighborhood.iloc[0].gff_name} could not be found."
             rec = [SeqRecord(rec.seq,id=rec.id.split('|')[-1],description=rec.description) 
                    for rec in SeqIO.parse(fasta_dir,"fasta") if rec.id.split('|')[-1] in list(neighborhood.protein_id)] # ids in chopped genomes (made from prokka) are a bit diff than what is found in refseq
    

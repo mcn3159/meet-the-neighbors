@@ -120,7 +120,9 @@ def format_search(search_res,meta,vfquery_vfid,vfmap_df):
         search_res[i] = df
     
     search_res = pd.concat(search_res)
-    search_res['mean_score'] = search_res['bits'] * geometric_mean(search_res['qtmscore'] * search_res['lddt'])
+    # search_res['mean_score'] = search_res['bits'] * geometric_mean([search_res['qtmscore'], search_res['lddt']])
+    search_res['geo_mean'] = search_res.apply(lambda row: geometric_mean([row['lddt'], row['alntmscore']]), axis=1)
+    search_res['mean_score'] = search_res['bits'] * search_res['geo_mean']
     return search_res
 
 def format_searchlabels(search_res):

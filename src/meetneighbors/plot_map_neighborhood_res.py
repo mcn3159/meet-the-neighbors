@@ -23,7 +23,6 @@ def prep_cluster_tsv(mmseqs_res_dir,logger):
     else:
         mmseqs = mmseqs_res_dir.copy() 
     
-
     mmseqs['VF_center'],mmseqs['gff'],mmseqs['seq_id'],mmseqs['locus_range'],mmseqs['start'], mmseqs['strand'] = mmseqs['locus_tag'].str.split('!!!').str[1],\
                                                                                mmseqs['locus_tag'].str.split('!!!').str[2],\
                                                                                mmseqs['locus_tag'].str.split('!!!').str[3],\
@@ -31,9 +30,19 @@ def prep_cluster_tsv(mmseqs_res_dir,logger):
                                                                                mmseqs['locus_tag'].str.split('!!!').str[5],\
                                                                                mmseqs['locus_tag'].str.split('!!!').str[6]
     mmseqs['neighborhood_name'] = mmseqs['VF_center'] + '!!!' + mmseqs['gff'] + '!!!' + mmseqs['seq_id'] + '!!!' + mmseqs['locus_range'] #VF_center in non_vf calls are simply just the query hits
-    
-    if isinstance(mmseqs_res_dir,str):
-        mmseqs = mmseqs.compute()
+
+    try:
+        if isinstance(mmseqs_res_dir,str):
+            mmseqs = mmseqs.compute()
+    except:
+        logger.debug("Ran into OOM from calling .compute() on mmseqs cluster results. Chunking instead")
+        n_partitions = mmseqs.npartitions
+        # Process each partition separately
+        mmseqs_chunks = [mmseqs.get_partition(i).compute() for i in range(n_partitions)]
+        # Combine results
+        mmseqs = pd.concat(mmseqs_chunks, ignore_index=True)
+        del mmseqs_chunks
+
     cluster_names = {rep:f"Cluster_{i}" for i,rep in enumerate(set(list(mmseqs.rep)))} #can't list and loop mmseqs col with dask, so I have to compute first
     mmseqs['cluster'] = mmseqs['rep'].map(cluster_names)
     mmseqs['prot_gffname'] = mmseqs['locus_tag'].str.split('!!!').str[0] + '!!!' + mmseqs['gff']
@@ -127,6 +136,21 @@ def get_query_neighborhood_groups(mmseqs_clust,cluster_neighborhoods_by):
     mmseqs_clust_nolink_targ_query[cluster_neighborhoods_by] = mmseqs_clust.neighborhood_name.map(nname_query) # no link between target and alot of the query col values
     mmseqs_clust_nolink_groups = mmseqs_clust_nolink_targ_query.groupby(cluster_neighborhoods_by,dropna=True) # did this line and the above so that the below dict comp runs faster hopefully
     return mmseqs_clust_nolink_groups
+
+def hash_neighborhoods(mmseqs_clust):
+    # create a hash for neighborhood names with the same content and order for deduplication.
+    # not dask maping this function b/c I need to make and keep the dictionary output. And idk how dask map behaves w/ hashing 
+    # use nn_hash dictionary to map back embeddings with an nn. Should run this after a reduce overlap
+    mmseqs_clust_grps = mmseqs_clust.groupby('neighborhood_name')[['rep','start']]
+
+    nn_hash = {nn: hash(tuple(grp.sort_values(by='start').drop_duplicates(subset='start')['rep'])) 
+               for nn,grp in mmseqs_clust_grps}
+
+    mmseqs_clust['nn_hashes'] = mmseqs_clust['neighborhood_name'].map(nn_hash)
+    nn_per_hash = mmseqs_clust.groupby('nn_hashes',group_keys=False)['neighborhood_name'].apply(lambda x: x.sample(1))
+    mmseqs_clust = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(nn_per_hash)]
+
+    return mmseqs_clust, nn_hash
 
 class VF_neighborhoods:
     def __init__(self,logger,mmseqs_clust,query,dbscan_eps,dbscan_min):

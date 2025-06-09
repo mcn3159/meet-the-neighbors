@@ -203,7 +203,7 @@ def run_glm_embeds(model,pkg_data_dir,glm_embed_output_path,device,ngpus,batch_s
     logging.info("command: " + string_of_command)
 
     model.eval()
-    ngpus=1
+    # ngpus=1 # I think it might be faster using torch parallel
     if ngpus>1:
         model = torch.nn.DataParallel(model)
     model.to(device)
