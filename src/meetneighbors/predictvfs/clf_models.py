@@ -9,11 +9,11 @@ import torch.optim as optim
 class FullyConnectedNN(nn.Module):
     def __init__(self, input_dim, num_classes):
         super(FullyConnectedNN, self).__init__()
-        self.fc1 = nn.Linear(input_dim, 256)
+        self.fc1 = nn.Linear(input_dim, 384)
         self.dropout1 = nn.Dropout(0.6)
-        self.fc2 = nn.Linear(256, 256)
+        self.fc2 = nn.Linear(384, 384)
         self.dropout2 = nn.Dropout(0.6)
-        self.fc3 = nn.Linear(256, num_classes)
+        self.fc3 = nn.Linear(384, num_classes)
         
     def forward(self, x):
         x = torch.relu(self.fc1(x))

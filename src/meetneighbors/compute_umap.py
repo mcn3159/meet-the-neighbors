@@ -16,19 +16,20 @@ def unpack_embeddings(glm_out_dir,glm_in_dir,mmseqs_clust): # lowkey don't need 
     glm_res_d_vals_predf = {}
     # below column names are used for virulent mode, 
     input_tsv_cols = ['neighborhood_name','neighborhood','vf_center_index','vf_name','vfid','vf_subcategory','vf_category','species','genus']
+
+    query_reps = mmseqs_clust.dropna(subset='query').groupby('neighborhood_name')['rep'].apply(set).to_dict() # some queries may not be the VF center of the neighborhoodname key, but that's ok for this usecase
     
     for vf in tqdm(glm_vf_fldrs_o):
         input_tsv = pd.read_csv(glm_vf_fldrs_i[vf],sep="\t",names=input_tsv_cols) #read in gLM input
         batch_size = [len(row.neighborhood.split(';')) for row in input_tsv.itertuples()] # get the whole size of each neighborhood for later indexing for VF center
         glm_index = [int(input_tsv.vf_center_index.iloc[i]) + sum(batch_size[:i]) for i in range(len(batch_size))] # grabbing index of protein in gLM batch output obj
         input_tsv['glm_indicies'] = glm_index
-        query_reps = list(set(mmseqs_clust[mmseqs_clust['query']==vf]['rep'])) # VF_center cluster representatives only used for assert
         glm_batch = pkl.load(open(glm_vf_fldrs_o[vf]+'/results/results/batch.pkl.glm.embs.pkl','rb'))
         glm_batch = np.array(glm_batch, dtype=object)[input_tsv['glm_indicies'].values] #subset gLM batch for indicies of VF centers
         assert len(glm_batch) == len(input_tsv),"gLM batch size subset and input tsv size do not match"
         for i,embed in enumerate(glm_batch): # there should be an embedding for each row in input_tsv or for each VF center
             glm_res_d_vals_predf[vf+"!!!"+str(i)] = np.append(embed[1],input_tsv.iloc[i].loc[['neighborhood_name','vf_name','vfid','vf_category','species','genus']].values) # used i to index input_tsv instead of 0 b/c neighborhood names are different for each row
-            assert embed[0] in query_reps, f"Embedding {embed[0]} in gLM batch {vf} is not a rep of a target VF." # make sure 
+            assert embed[0] in query_reps[input_tsv['neighborhood_name'].iloc[i]], f"Embedding {embed[0]} in gLM batch {vf} is not a rep of a target VF." # make sure 
 
     return glm_res_d_vals_predf
 

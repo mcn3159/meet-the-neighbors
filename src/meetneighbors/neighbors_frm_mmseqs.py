@@ -60,9 +60,11 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
         if len(gps) == 1:
             gps = glob.glob(args.genomes + genome_query.split('.fa')[0] + '*') # if genome_query = GCF.faa or genome_query = GCF.fasta, might fail if genome_query = GCF.fabas.gff
         if len(gps) == 1:
-            genome_query = genome_query + '.gff'
+            genome_query = genome_query + '.gff' # add back the gff ending in case the files are called 'GCF_genomeBlaBlabla_genomic.gff
             gps = glob.glob(args.genomes + genome_query.split('genomic.gff')[0] + '*')
-        assert len(gps) == 2, f"Protein and gff file for {genome_query} could not be found. Make sure protein and gff pairs have the same file prefix, or ends with _protein.faa and _genomic.gff respectively"
+        elif len(gps) > 2: # if the genome directory has GCF.faa, GCF.fasta GCF.gbk and GCF.gff, only keep the .faa and .gff. May throw an error if user only has a .fasta and .gff
+            gps = [gen_file for gen_file in gps if '.faa' in gen_file or '.gff' in gen_file]
+        assert len(gps) == 2, f"Protein and gff file for {genome_query} could not be found. Make sure protein and gff pairs have the same file prefix, or ends with .faa and .gff respectively"
         
         if '.gff' in gps[0]:
             gff,protein = gps[0],gps[1]
@@ -79,6 +81,8 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
         gff, protein_file = get_gff_prot_filenames(genome_query,args)
         # gff = args.genomes + genome_query + 'genomic.gff'
         gff_df = pg.gff2pandas(gff)
+        if 'protein_id' not in gff_df.columns: # gffs made with phannotate don't output a protein_id field,
+            gff_df['protein_id'] = gff_df['locus_tag'].copy()
         gff_df['protein_id'] = gff_df['protein_id'].str.split(':').str[-1] # remove weird characters in protein id
 
         # get list of protein ids to then use on gff,subset protein id to match what's in gff_df

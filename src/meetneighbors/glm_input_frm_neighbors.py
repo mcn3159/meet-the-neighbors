@@ -1,7 +1,9 @@
 import pandas as pd
 from Bio import SeqIO
-import random 
+import shutil
 import numpy as np
+
+from meetneighbors.predictvfs import neighborhood_classification as nc
 
 
 def get_glm_input(**kwargs):
@@ -68,4 +70,39 @@ def get_glm_input(**kwargs):
     fasta = filter(lambda x: x.id in list(mmseqs_clust.rep),fasta)
     with open(f"{args.out}{glm_input_dir}/{df_name}.fasta","x") as handle: #tsv and fasta files should have the same name
         SeqIO.write(fasta, handle, "fasta")
+    return 
+
+def concat_tsv_fastas(directory, args, logger, chunk_size=5000):
+    # this is a tempory fix for slow embedding computations...I discovered that embeddings are slow b/c its starting then processing one file at a time
+    # the real fix should modify glm_input_frm_neighbors.py so that this function function doesn't need to happen
+    tsv_files = nc.glob.glob(f"{directory}/*.tsv")
+    fasta_files = nc.glob.glob(f"{directory}/*.fasta")
+
+    glm_input2_out = f"{args.out}glm_input2/"
+    try:
+        nc.os.mkdir(glm_input2_out) # should return an error if the path already exists, incase program finished in the middle of creating inputs, restart from here
+    except FileExistsError as e: # if running w/ resume and glm_inputs directory is already made, clear it then make inputs from the beginning
+        logger.error(e)
+        logger.debug("Removing contents from glm inputs2 directory then recreating..")
+        shutil.rmtree(glm_input2_out) # switched to shutil and os here b/c subprocess wasn't finding directory to remove for whatever reason
+        nc.os.mkdir(glm_input2_out)
+    
+    for i in range(0, len(tsv_files), chunk_size):
+        chunk_files = tsv_files[i:i + chunk_size]
+        fasta_chunks = sum([list(SeqIO.parse(fasta,'fasta')) for fasta in fasta_files[i:i + chunk_size]],[])
+
+        output_file = f"{glm_input2_out}combined_chunk_{i//chunk_size + 1}.tsv"
+        output_fasta = f"{glm_input2_out}combined_chunk_{i//chunk_size + 1}.fasta"
+
+        # Use cat to concatenate files directly
+        cmd = ['cat'] + chunk_files
+        
+        with open(output_file, 'w') as outfile:
+            nc.subprocess.run(cmd, stdout=outfile, check=True)
+        SeqIO.write(fasta_chunks,output_fasta,'fasta')
+        
+        print(f"Processed chunk {i//chunk_size + 1}: {len(chunk_files)} files")
+
+    shutil.rmtree(directory) # remove originial glm_inputs dir to save file space
+    shutil.move(glm_input2_out, directory)
     return 

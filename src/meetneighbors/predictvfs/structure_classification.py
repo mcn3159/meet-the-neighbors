@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from statistics import geometric_mean
 import pickle as pkl
-from sklearn.preprocessing import MinMaxScaler # type: ignore
+from sklearn.preprocessing import StandardScaler # type: ignore
 import time
 import tqdm # type: ignore
 import importlib.resources
@@ -181,7 +181,7 @@ def format_strucpreds(pred_raw,lb):
     struct_preds_expanded = pd.DataFrame(struct_preds[struct_preds.columns[0]].tolist(),index=struct_preds.index)
 
     # scale structure-based predictions so the LR ensemble model has an easier time training
-    scaler = MinMaxScaler()
+    scaler = StandardScaler()
     scaler.fit(struct_preds_expanded.values)
     struct_predictions_scaled = scaler.transform(struct_preds_expanded.values)
     struct_predictions_scaled = pd.concat([pd.DataFrame(struct_predictions_scaled),struct_preds.iloc[:,1]],axis=1)

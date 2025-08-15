@@ -70,9 +70,7 @@ def pull_neighborhoodsdf(args,tmpd,logger):
         if args.query_fasta:
             mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search,vfdb=None,removed_neighborhoods=None,logger=logger) # need to fix removed_neighborhoods later
             mmseqs_clust = mmseqs_clust.compute()
-        else:
-            mmseqs_clust['query'] = mmseqs_clust['gff'].copy() 
-
+        
     else:
         # grab all the proteins found from all neighborhoods, to then send to a dataframe with neighborhood id info
         combinedfastas = glob.glob(f"{args.out}combined_fasta_partition*")
@@ -89,22 +87,16 @@ def pull_neighborhoodsdf(args,tmpd,logger):
         mmseqs_clust.columns = ['rep','locus_tag'] 
         mmseqs_clust = pn.prep_cluster_tsv(mmseqs_clust,logger)
         # b/c we didnt do an initial search all VF centers are the queries for glm input purposes. This will end up creating a lot of glm_inputs
-        mmseqs_clust['query'] = mmseqs_clust['VF_center'].copy() 
+    if args.query_fasta:
+        mmseqs_clust['query'] = mmseqs_clust['VF_center'].copy()
+    else:
+        mmseqs_clust['query'] = mmseqs_clust['gff'].copy() 
     
     nn_hash = None
     if args.memory_optimize:
         logger.debug("Save then remove duplicate neighborhoods. Map neighborhoods back via embeddings")
-        # sample_size = 10000
-        # sample_memory = mmseqs_clust.sample(sample_size).memory_usage(deep=True).sum()
-        # total_mem_bytes = (sample_memory / sample_size) * mmseqs_clust.shape[0]
-        # mmseqs_clust = mmseqs_clust.groupby(['gff', 'strand', 'seq_id']) #cant groupby on its own with dask
-        # mmseqs_clust = list(mmseqs_clust)
-        # mmseqs_clust = db.from_sequence(mmseqs_clust,npartitions=args.threads)
-        # mmseqs_clust = db.map(pn.reduce_overlap,mmseqs_clust,window=args.olp_window).compute()
-        # mmseqs_clust = pd.concat(mmseqs_clust)
         logger.debug(f"Total number of neighborhoods pre-hash: {len(set(mmseqs_clust['neighborhood_name']))}")
         
-
         mmseqs_clust, nn_hash = pn.hash_neighborhoods(mmseqs_clust)
         pkl.dump(nn_hash,open(f'{args.out}nnhash_mapping.obj','wb'))
 
@@ -214,7 +206,7 @@ def get_embed_preds(embeds,model_weights,lb,args): # might want to put lb into t
     
     ecc_predictionsdf['seq_annotations'] = ecc_predictionsdf['query'].map(prot_annots)
     
-    new_col_order = ['query', 'neighborhood_name', 'seq_annotations','Adherence ', 'Effector delivery system ', 'Exoenzyme ', 'Exotoxin ', 'Immune modulation ', 'Invasion ', 'Motility ', 'non_vf']
+    new_col_order = ['query', 'neighborhood_name', 'seq_annotations'] + list(lb.classes_)
 
     ecc_predictionsdf = ecc_predictionsdf[new_col_order]
     

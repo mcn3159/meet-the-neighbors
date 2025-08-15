@@ -147,6 +147,7 @@ def hash_neighborhoods(mmseqs_clust):
                for nn,grp in mmseqs_clust_grps}
 
     mmseqs_clust['nn_hashes'] = mmseqs_clust['neighborhood_name'].map(nn_hash)
+    nn_hash = mmseqs_clust.drop_duplicates(subset='neighborhood_name').groupby('nn_hashes')[['query','neighborhood_name']].apply(lambda x: x.values.tolist()).to_dict()
     nn_per_hash = mmseqs_clust.groupby('nn_hashes',group_keys=False)['neighborhood_name'].apply(lambda x: x.sample(1))
     mmseqs_clust = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(nn_per_hash)]
 
