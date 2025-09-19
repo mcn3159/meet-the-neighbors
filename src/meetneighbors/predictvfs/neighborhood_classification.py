@@ -52,15 +52,42 @@ def pull_neighborhoodsdf(args,tmpd,logger):
                 mmseqs_grp_db,mmseqs_search = n.read_search_tsv(input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
                 logger.info(f"Number of query proteins found in genomes: {len(set(mmseqs_search['query']))}")
             neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, mmseqs_groups = mmseqs_grp_db,head_on=args.head_on,intergenic_cutoff=args.intergenic) # might want to fix the potential issue of neighborhoods getting removed if they don't meet minimum criteria
-        else:
-            logger.debug("Chopping up some genomes...")
-            genome_queries = [genome.split('/')[-1].split('.gff')[0] for genome in glob.glob(args.genomes + '*.gff')]
-            genome_query_db = db.from_sequence(genome_queries,npartitions=args.threads)
-            neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, genome_query = genome_query_db,head_on=args.head_on,intergenic_cutoff=args.intergenic)
 
+        elif args.genome_tsv:
+            logger.debug("Chopping up some genomes...")
+            if args.genome_tsv: # use if user provides a tsv with paths to genome and protein files, columns must be genome_name, protein path, and gff path
+                args.genome_tsv = pd.read_csv(args.genome_tsv,sep="\t",names=['genome','protein','gff'])
+                firstrow_check = args.genome_tsv.iloc[0]
+                file_endings = {'.gff':'gff',
+                                '.faa':'protein',
+                                '.fasta':'protein'}
+                find_correct_colnames = {}
+
+                for i,colname in enumerate(firstrow_check):
+                    for ending,v in file_endings.items():
+                        if ending in colname:
+                            find_correct_colnames[i] = v
+                            break
+                        else:
+                            find_correct_colnames[i] = 'genome'
+                args.genome_tsv.columns = [find_correct_colnames[i] for i in range(3)] # should be up to 3 columns
+
+                genome_queries = list(args.genome_tsv['genome'])
+                genome_query_db = db.from_sequence(genome_queries,npartitions=args.threads)
+                neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, genome_query = genome_query_db,head_on=args.head_on,intergenic_cutoff=args.intergenic)
+            else:
+                genome_queries = [genome.split('/')[-1].split('.gff')[0] for genome in glob.glob(args.genomes + '*.gff')]
+                genome_query_db = db.from_sequence(genome_queries,npartitions=args.threads)
+                neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, genome_query = genome_query_db,head_on=args.head_on,intergenic_cutoff=args.intergenic)
+
+        logger.debug("Saving protiens found in neighborhoods..")
         neighborhood_db = neighborhood_db.flatten()
         n.run_fasta_from_neighborhood(logger,args,dir_for_fasta=args.genomes,neighborhood=neighborhood_db,
-                                        out_folder=args.out,threads=args.threads)
+                                        out_folder=args.out,threads=args.threads) # need to call this function in a smarter way. Basically I'm opening and closing a new fasta for neighborhood, which is probably a major slow down.
+        # maybe instead of the above two lines I can...
+        # 1) pd.concat the neighborhood dataframes in neighborhooddb
+        # 2) groupby gff name then send the groups to a list, then convert to dask bag
+        # 3) Apply the run_fasta_from_neighborhood() function to each group (would require me to modify run_fasta_from_neighborhood()
     
     if args.cluster: # need the mmseqs_search object from a query fasta from this work
         logger.debug("Clustering proteins found in all neighborhoods...")
@@ -195,18 +222,19 @@ def get_embed_preds(embeds,model_weights,lb,args): # might want to put lb into t
 
     ecc_predictionsdf = pd.concat([embeds['query'],embeds['neighborhood_name'],ecc_predictions],axis=1)
 
+    # So the annotations rarely ever mapped with the code commented out below. Don't think it's worth fixing, was just nice to have annotations in results
     # map annotations to predictionsdf
-    prot_annots = {}
-    prot_faas = [proteome for proteome in glob.glob(args.genomes+'*') if '.gff' not in proteome]
-    for fasta in prot_faas:
-        prot_annots.update({rec.id.split('|')[-1]:' '.join(rec.description.split(' ')[1:]) for rec in SeqIO.parse(fasta,"fasta")})
+    # prot_annots = {}
+    # prot_faas = [proteome for proteome in glob.glob(args.genomes+'*') if '.gff' not in proteome]
+    # for fasta in prot_faas:
+    #     prot_annots.update({rec.id.split('|')[-1]:' '.join(rec.description.split(' ')[1:]) for rec in SeqIO.parse(fasta,"fasta")})
     
     # neighborhoods couldn't be extracted for some queries b/c it didn't fit the minimum neighborhood definition requirements
     # logger.debug("Number of queries with no neighborhoods:",len(prot_annots)-len(set(embeds['query'])))
     
-    ecc_predictionsdf['seq_annotations'] = ecc_predictionsdf['query'].map(prot_annots)
+    # ecc_predictionsdf['seq_annotations'] = ecc_predictionsdf['query'].map(prot_annots)
     
-    new_col_order = ['query', 'neighborhood_name', 'seq_annotations'] + list(lb.classes_)
+    new_col_order = ['query', 'neighborhood_name'] + list(lb.classes_)
 
     ecc_predictionsdf = ecc_predictionsdf[new_col_order]
     
