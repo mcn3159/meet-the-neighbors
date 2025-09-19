@@ -50,6 +50,7 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
     # condition: If the same protein appears twice in a genome, but has different neighborhoods? They should have the same query
 
     mmseqs_group = kwargs.get("mmseqs_groups",None)
+    # genome_paths_df = kwargs.get("genome_paths",None)
     genome_query = kwargs.get("genome_query",None)
     args.head_on = kwargs.get("head_on",None) # to be compatible with chop genome
     args.intergenic = kwargs.get("intergenic_cutoff",None) # to be compatible with chop genome
@@ -78,13 +79,19 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
         protein_ids = list(mmseqs_group[1].target)
     
     if genome_query:
-        gff, protein_file = get_gff_prot_filenames(genome_query,args)
+        if isinstance(args.genome_tsv,pd.DataFrame):
+            genome_path_row = args.genome_tsv[args.genome_tsv['genome']==genome_query].iloc[0]
+            gff,protein_file = genome_path_row['gff'], genome_path_row['protein']
+            gff_prefix = genome_query
+        else:
+            gff, protein_file = get_gff_prot_filenames(genome_query,args)
+            gff_prefix = gff.split('/')[-1].split('_genomic.gff')[0].split('.gff')[0]
         # gff = args.genomes + genome_query + 'genomic.gff'
         gff_df = pg.gff2pandas(gff)
         if 'protein_id' not in gff_df.columns: # gffs made with phannotate don't output a protein_id field,
             gff_df['protein_id'] = gff_df['locus_tag'].copy()
         gff_df['protein_id'] = gff_df['protein_id'].str.split(':').str[-1] # remove weird characters in protein id
-
+        
         # get list of protein ids to then use on gff,subset protein id to match what's in gff_df
         protein_ids = set([rec.id.split('|')[-1] for rec in pg.SeqIO.parse(protein_file,"fasta")]) 
 
@@ -117,22 +124,24 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
             (neighborhood_df['start'] >= row.start - window) &
             (neighborhood_df['end'] <= row.end + window)]
         neighborhood_df['VF_center'] = row.protein_id
-        neighborhood_df['gff_name'] = gff.split('/')[-1].split('_genomic.gff')[0].split('.gff')[0] # for compatibility with chop_genomes
+        neighborhood_df['gff_name'] =  gff_prefix # for compatibility with chop_genomes
 
-        if args.intergenic:
+        if args.intergenic: # maybe I can significantly speed this up by substracting the start positions from the previous proteins end position, if over intergenic distance, remove
             if neighborhood_df.shape[0] < 2: # skip if there's no proteins found in the neighborhood besides the center
                 continue
             
-            og_shape = neighborhood_df.shape
+            # og_shape = neighborhood_df.shape
 
             clustering = AgglomerativeClustering(linkage='single', distance_threshold=args.intergenic, n_clusters= None).fit(
                 neighborhood_df[['start','end']].to_numpy())
             
-            # combine cluster labels w/ where each neighborhood start stop was found, indices are the same
-            neighborhood_df = pd.concat([neighborhood_df,
-                        pd.DataFrame(clustering.labels_,columns=['clu_label'],index=neighborhood_df.index)],
-                        axis=1)
-            
+            # # combine cluster labels w/ where each neighborhood start stop was found, indices are the same
+            # neighborhood_df = pd.concat([neighborhood_df,
+            #             pd.DataFrame(clustering.labels_,columns=['clu_label'],index=neighborhood_df.index)],
+            #             axis=1)
+
+            # Add cluster labels directly to the dataframe (more efficient than concat)
+            neighborhood_df['clu_label'] = clustering.labels_ # from claude
             # get the cluster label of the VF center
             clustr_labl_tokeep = neighborhood_df.loc[neighborhood_df['protein_id']==row.protein_id, 'clu_label'].iloc[0]
 
@@ -140,11 +149,11 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
             neighborhood_df = neighborhood_df[neighborhood_df['clu_label'] == clustr_labl_tokeep]
 
             # get an idea of the # of proteins removed from clustering
-            num_prots_removed = og_shape[0] - neighborhood_df.shape[0] 
-            if num_prots_removed > 0:
-                logger.warning(f"{num_prots_removed} proteins remove from neighborhood based of INTERGENIC distance...")
+            # num_prots_removed = og_shape[0] - neighborhood_df.shape[0] 
+            # if num_prots_removed > 0:
+            #     logger.warning(f"{num_prots_removed} proteins remove from neighborhood based of INTERGENIC distance...")
             
-
+        # should make an argument that lets the user decide if they want a temp directory
         # remove neighborhoods that don't fit specified conditions
         if len(neighborhood_df) < args.min_prots: #neighborhood centers could be near a contig break causing really small neighborhoods, which isnt helpful info, remove these
             removed_neighborhoods.append(neighborhood_df['VF_center'].iloc[0] + '!!!' + neighborhood_df['gff_name'].iloc[0]) # save this info for debugging later

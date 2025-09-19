@@ -44,7 +44,7 @@ def prep_cluster_tsv(mmseqs_res_dir,logger):
         del mmseqs_chunks
 
     cluster_names = {rep:f"Cluster_{i}" for i,rep in enumerate(set(list(mmseqs.rep)))} #can't list and loop mmseqs col with dask, so I have to compute first
-    mmseqs['cluster'] = mmseqs['rep'].map(cluster_names)
+    mmseqs['cluster'] = mmseqs['rep'].map(cluster_names.get)
     mmseqs['prot_gffname'] = mmseqs['locus_tag'].str.split('!!!').str[0] + '!!!' + mmseqs['gff']
 
     logger.debug(f"Size of mmseqs cluster results: {mmseqs.shape}")
@@ -113,7 +113,7 @@ def select_multivf_neighborhoods(mmseqs_clust,loose_vf_search,logger):
     lc_query_map = dict(zip(loose_vf_search['target'],loose_vf_search['query'])) # this dictionary will be used to map additional locus tags (target) that had some sort of seq similarity to a vf (query)
 
     og_hits.update(lc_query_map) # combine new locus tag hits to a VF with the originals
-    mmseqs_clust['loose_query'] = mmseqs_clust['locus_tag'].map(og_hits) # new column gives an idea of what neighborhoods have multiple VFs mapped to it
+    mmseqs_clust['loose_query'] = mmseqs_clust['locus_tag'].map(og_hits.get) # new column gives an idea of what neighborhoods have multiple VFs mapped to it
 
     print(mmseqs_clust.dropna(subset=['loose_query']).shape)
     print(mmseqs_clust.dropna(subset=['loose_query']).head())
@@ -133,7 +133,7 @@ def get_query_neighborhood_groups(mmseqs_clust,cluster_neighborhoods_by):
     nname_query = mmseqs_clust_sub.groupby('neighborhood_name')[cluster_neighborhoods_by].apply(list).to_dict()
     nname_query = {n:query for n in nname_query for query in nname_query[n] if '!!!'.join(n.split('!!!')[:2]) in query_prot[query]}
     mmseqs_clust_nolink_targ_query = mmseqs_clust.copy()
-    mmseqs_clust_nolink_targ_query[cluster_neighborhoods_by] = mmseqs_clust.neighborhood_name.map(nname_query) # no link between target and alot of the query col values
+    mmseqs_clust_nolink_targ_query[cluster_neighborhoods_by] = mmseqs_clust.neighborhood_name.map(nname_query.get) # no link between target and alot of the query col values
     mmseqs_clust_nolink_groups = mmseqs_clust_nolink_targ_query.groupby(cluster_neighborhoods_by,dropna=True) # did this line and the above so that the below dict comp runs faster hopefully
     return mmseqs_clust_nolink_groups
 
@@ -146,7 +146,7 @@ def hash_neighborhoods(mmseqs_clust):
     nn_hash = {nn: hash(tuple(grp.sort_values(by='start').drop_duplicates(subset='start')['rep'])) 
                for nn,grp in mmseqs_clust_grps}
 
-    mmseqs_clust['nn_hashes'] = mmseqs_clust['neighborhood_name'].map(nn_hash)
+    mmseqs_clust['nn_hashes'] = mmseqs_clust['neighborhood_name'].map(nn_hash.get)
     nn_hash = mmseqs_clust.drop_duplicates(subset='neighborhood_name').groupby('nn_hashes')[['query','neighborhood_name']].apply(lambda x: x.values.tolist()).to_dict()
     nn_per_hash = mmseqs_clust.groupby('nn_hashes',group_keys=False)['neighborhood_name'].apply(lambda x: x.sample(1))
     mmseqs_clust = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(nn_per_hash)]

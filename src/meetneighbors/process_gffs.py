@@ -58,13 +58,18 @@ def get_neighborhoodIDs_wGFF(specific_ids,df,window):
 
 def get_protseq_frmFasta(logger,args,dir_for_fastas,neighborhood,fasta_per_neighborhood):
     # this function defines the neighborhood naming schema and pulls neighborhood protein components from the fasta
-
-    if dir_for_fastas[-1] != '/':
-        dir_for_fastas += '/'
+    rec = None
     try:
         # define neighborhood naming schema
         neighborhood_name = f'{neighborhood.iloc[0].VF_center}!!!{neighborhood.iloc[0].gff_name}!!!{neighborhood.iloc[0].seq_id}!!!{neighborhood.iloc[0].start}-{neighborhood.iloc[-1].end}'
-        fasta_dir = dir_for_fastas+neighborhood.iloc[0].gff_name+'_protein.faa'
+        if isinstance(args.genome_tsv,pd.DataFrame):
+            fasta_dir = args.genome_tsv[args.genome_tsv['genome']==neighborhood.iloc[0].gff_name]['protein'].iloc[0]
+            rec = [SeqRecord(rec.seq,id=rec.id.split('|')[-1],description=rec.description) 
+                   for rec in SeqIO.parse(fasta_dir,"fasta") if rec.id.split('|')[-1] in list(neighborhood.protein_id)] # Sometimes proteins ids in gff are different from protein ids like when ids in genomes made from prokka are a bit diff than what is found in refseq. Luckily they tend to be the same after '|'
+        else:
+            if dir_for_fastas[-1] != '/':
+                dir_for_fastas += '/'
+            fasta_dir = dir_for_fastas+neighborhood.iloc[0].gff_name+'_protein.faa'
 
         # if statement here is quick fix to make this function compatible with chop genome
         if not os.path.isfile(fasta_dir):
@@ -74,12 +79,12 @@ def get_protseq_frmFasta(logger,args,dir_for_fastas,neighborhood,fasta_per_neigh
                 fasta_dir = dir_for_fastas+neighborhood.iloc[0].gff_name+'.fasta'
                 assert os.path.isfile(fasta_dir), f"Protein file for {dir_for_fastas+neighborhood.iloc[0].gff_name} could not be found."
             rec = [SeqRecord(rec.seq,id=rec.id.split('|')[-1],description=rec.description) 
-                   for rec in SeqIO.parse(fasta_dir,"fasta") if rec.id.split('|')[-1] in list(neighborhood.protein_id)] # ids in chopped genomes (made from prokka) are a bit diff than what is found in refseq
+                   for rec in SeqIO.parse(fasta_dir,"fasta") if rec.id.split('|')[-1] in list(neighborhood.protein_id)] # Sometimes proteins ids in gff are different from protein ids like when ids in genomes made from prokka are a bit diff than what is found in refseq
    
         else:
             fasta = SeqIO.parse(fasta_dir,'fasta')
-            rec = list(filter(lambda x: x.id in list(neighborhood.protein_id),fasta)) # subset originial fasta for ids in neighborhood
-
+            if rec == None:
+                rec = list(filter(lambda x: x.id in list(neighborhood.protein_id),fasta)) # subset originial fasta for ids in neighborhood
         
         # remove list in front of filter, in line above
         if len(rec) < args.min_prots or len(rec) > args.max_prots:
