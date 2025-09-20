@@ -66,8 +66,17 @@ def get_glm_input(**kwargs):
     df_name = query
     df.to_csv(f"{args.out}{glm_input_dir}/{df_name}.tsv",sep='\t',header=False,mode="x")
 
-    fasta = SeqIO.parse(combinedfasta_ref,"fasta") 
-    fasta = filter(lambda x: x.id in list(mmseqs_clust.rep),fasta)
+    og_fasta = SeqIO.parse(combinedfasta_ref,"fasta")
+    
+    if args.query_fasta: # might break, i think this if statement should work if genomes mode is called
+        fasta = filter(lambda x: x.id.split('|')[-1] in list(mmseqs_clust.rep),og_fasta) 
+    else:
+        fasta = []
+        valid_reps = set(mmseqs_clust.rep.values)
+        for rec in og_fasta:
+            rec.id = rec.id.split('|')[-1]
+            if rec.id in valid_reps:
+                fasta.append(rec)
     with open(f"{args.out}{glm_input_dir}/{df_name}.fasta","x") as handle: #tsv and fasta files should have the same name
         SeqIO.write(fasta, handle, "fasta")
     return 

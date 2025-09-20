@@ -1,5 +1,6 @@
 import subprocess
 import os
+import pandas as pd
 # script to call mmseqs functions
 
 def mmseqs_createdb(args):
@@ -24,7 +25,10 @@ def mmseqs_search(args,genomes_db):
 
 def mmseqs_cluster(args,glm_inputs=True):
         if (args.resume and not os.path.isfile(f"{args.out}combined_fastas_clust_res.tsv")) or (not args.resume): # don't recreate clus_res.tsv if it already exists
-            subprocess.run(f"mmseqs createdb {args.out}combined_fasta_partition* {args.out}combined_fastas_db -v 2",shell=True,check=True)
+            if isinstance(args.genome_tsv,pd.DataFrame):
+                subprocess.run(f"mmseqs createdb {' '.join(list(args.genome_tsv['protein']))} {args.out}combined_fastas_db -v 2",shell=True,check=True) # should probably put the createdb call in the mmseqs_createdb() function
+            else:
+                subprocess.run(f"mmseqs createdb {args.out}combined_fasta_partition* {args.out}combined_fastas_db -v 2",shell=True,check=True)
             # hard coded some clustering params b/c the goal is to reduce redundant proteins
             subprocess.run(f"mmseqs cluster {args.out}combined_fastas_db {args.out}combined_fastas_clust --cov-mode 0 -c 0.90 --min-seq-id 0.90 --similarity-type 2 -v 2 --split-memory-limit {int(args.mem * (2/3))}G --threads {args.threads} {args.out}tmp_clust",
                             shell=True,check=True)

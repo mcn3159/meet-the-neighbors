@@ -92,6 +92,7 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
             gff_df['protein_id'] = gff_df['locus_tag'].copy()
         gff_df['protein_id'] = gff_df['protein_id'].str.split(':').str[-1] # remove weird characters in protein id
         
+        gff_df = gff_df[['protein_id','strand','seq_id','start','end']]
         # get list of protein ids to then use on gff,subset protein id to match what's in gff_df
         protein_ids = set([rec.id.split('|')[-1] for rec in pg.SeqIO.parse(protein_file,"fasta")]) 
 
@@ -102,6 +103,8 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
     if len(vf_centers) == 0:
         gff_df['protein_id'] = gff_df['protein_id'].str.split(':').str[-1]
         vf_centers = gff_df[gff_df['protein_id'].isin(protein_ids)]
+    
+    assert vf_centers.shape[0] > 0, f"Protein IDs in gff and protein fasta for genome: {genome_query} do not match." #!!! to add
 
     logger.warning(f"After size of gffdf: {vf_centers.shape}")
 
@@ -113,18 +116,21 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
     for row in vf_centers.itertuples(): # this adds a new neighborhood (neighborhood_df) to a list (neighborhoods)
 
         # subset the genome (gff_df) for genes on the same contig and/or strand
-        if args.head_on:
-            gff_df_strand = gff_df[gff_df['seq_id'] == row.seq_id]
-        else:
-            gff_df_strand = gff_df[(gff_df['strand'] == row.strand) & (gff_df['seq_id'] == row.seq_id)]
-        neighborhood_df = gff_df_strand.copy()
-
         # further subset the genome (now neighborhood_df) for genes within the predefined neighborhood limits default +/- 20kb
-        neighborhood_df = neighborhood_df[
-            (neighborhood_df['start'] >= row.start - window) &
-            (neighborhood_df['end'] <= row.end + window)]
+        if not args.head_on:
+            strand_mask = gff_df['strand'].values == row.strand
+        seq_id_mask = gff_df['seq_id'].values == row.seq_id
+        start_mask = gff_df['start'].values >= row.start - window
+        end_mask = gff_df['end'].values <= row.end + window
+
+        # # Combine all masks
+        final_mask = strand_mask & seq_id_mask & start_mask & end_mask
+        neighborhood_df = gff_df[final_mask].copy()
+
         neighborhood_df['VF_center'] = row.protein_id
         neighborhood_df['gff_name'] =  gff_prefix # for compatibility with chop_genomes
+        neighborhood_df['locus_range'] =  f"{min(neighborhood_df['start']) }-{max(neighborhood_df['end'])}" 
+        neighborhood_df.dropna(subset='protein_id',inplace=True)
 
         if args.intergenic: # maybe I can significantly speed this up by substracting the start positions from the previous proteins end position, if over intergenic distance, remove
             if neighborhood_df.shape[0] < 2: # skip if there's no proteins found in the neighborhood besides the center
@@ -167,6 +173,11 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
                 logger.warning(f"Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are more than {args.max_prots} proteins")
                 report +=1
             continue
+
+        if genome_query:
+            # below 2 lines are here for memory saving purposes. If I save then later concat the whole df, it will take up a lot of mem
+            neighborhood_df['neighborhood_name'] = neighborhood_df['VF_center'] + '!!!' + neighborhood_df['gff_name'] + '!!!' + neighborhood_df['seq_id'] + '!!!' + neighborhood_df['locus_range']
+            neighborhood_df = neighborhood_df[['protein_id','start','strand','neighborhood_name']]
         neighborhoods.append(neighborhood_df)
     
     # save removed neighborhoods to a temporary text file for each partition, for analysis later

@@ -12,7 +12,8 @@ import numpy as np
 from scipy.stats import entropy
 import dask.dataframe as dd
 
-def prep_cluster_tsv(mmseqs_res_dir,logger):
+def prep_cluster_tsv(mmseqs_res_dir,logger,**kwargs):
+    genome_query = kwargs.get('genome_query',None)
 
     #run for mmseqs clustered results
     #example res: '/Users/mn3159/bigpurple/data/pirontilab/Students/Madu/bigdreams_dl/neighborhood_call/neighbors_rand5k/neighbors_rand5k_clust_res.tsv'
@@ -23,13 +24,15 @@ def prep_cluster_tsv(mmseqs_res_dir,logger):
     else:
         mmseqs = mmseqs_res_dir.copy() 
     
-    mmseqs['VF_center'],mmseqs['gff'],mmseqs['seq_id'],mmseqs['locus_range'],mmseqs['start'], mmseqs['strand'] = mmseqs['locus_tag'].str.split('!!!').str[1],\
-                                                                               mmseqs['locus_tag'].str.split('!!!').str[2],\
-                                                                               mmseqs['locus_tag'].str.split('!!!').str[3],\
-                                                                               mmseqs['locus_tag'].str.split('!!!').str[4],\
-                                                                               mmseqs['locus_tag'].str.split('!!!').str[5],\
-                                                                               mmseqs['locus_tag'].str.split('!!!').str[6]
-    mmseqs['neighborhood_name'] = mmseqs['VF_center'] + '!!!' + mmseqs['gff'] + '!!!' + mmseqs['seq_id'] + '!!!' + mmseqs['locus_range'] #VF_center in non_vf calls are simply just the query hits
+    if not genome_query: # genome based query mode like chop-genome may be using the raw protein ids.
+        mmseqs['VF_center'],mmseqs['gff'],mmseqs['seq_id'],mmseqs['locus_range'],mmseqs['start'], mmseqs['strand'] = mmseqs['locus_tag'].str.split('!!!').str[1],\
+                                                                                mmseqs['locus_tag'].str.split('!!!').str[2],\
+                                                                                mmseqs['locus_tag'].str.split('!!!').str[3],\
+                                                                                mmseqs['locus_tag'].str.split('!!!').str[4],\
+                                                                                mmseqs['locus_tag'].str.split('!!!').str[5],\
+                                                                                mmseqs['locus_tag'].str.split('!!!').str[6]
+        mmseqs['neighborhood_name'] = mmseqs['VF_center'] + '!!!' + mmseqs['gff'] + '!!!' + mmseqs['seq_id'] + '!!!' + mmseqs['locus_range'] #VF_center in non_vf calls are simply just the query hits
+        mmseqs['prot_gffname'] = mmseqs['locus_tag'].str.split('!!!').str[0] + '!!!' + mmseqs['gff']
 
     try:
         if isinstance(mmseqs_res_dir,str):
@@ -45,8 +48,6 @@ def prep_cluster_tsv(mmseqs_res_dir,logger):
 
     cluster_names = {rep:f"Cluster_{i}" for i,rep in enumerate(set(list(mmseqs.rep)))} #can't list and loop mmseqs col with dask, so I have to compute first
     mmseqs['cluster'] = mmseqs['rep'].map(cluster_names.get)
-    mmseqs['prot_gffname'] = mmseqs['locus_tag'].str.split('!!!').str[0] + '!!!' + mmseqs['gff']
-
     logger.debug(f"Size of mmseqs cluster results: {mmseqs.shape}")
     return mmseqs
 
@@ -150,6 +151,11 @@ def hash_neighborhoods(mmseqs_clust):
     nn_hash = mmseqs_clust.drop_duplicates(subset='neighborhood_name').groupby('nn_hashes')[['query','neighborhood_name']].apply(lambda x: x.values.tolist()).to_dict()
     nn_per_hash = mmseqs_clust.groupby('nn_hashes',group_keys=False)['neighborhood_name'].apply(lambda x: x.sample(1))
     mmseqs_clust = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(nn_per_hash)]
+    mmseqs_clust['VF_center'],mmseqs_clust['gff'],mmseqs_clust['seq_id'],mmseqs_clust['locus_range'] = mmseqs_clust['neighborhood_name'].str.split('!!!').str[0],\
+                                                                        mmseqs_clust['neighborhood_name'].str.split('!!!').str[1],\
+                                                                        mmseqs_clust['neighborhood_name'].str.split('!!!').str[2],\
+                                                                        mmseqs_clust['neighborhood_name'].str.split('!!!').str[3]
+    mmseqs_clust['prot_gffname'] = mmseqs_clust['locus_tag'].str.split('!!!').str[0] + '!!!' + mmseqs_clust['gff']
 
     return mmseqs_clust, nn_hash
 
