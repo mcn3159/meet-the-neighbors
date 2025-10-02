@@ -36,82 +36,82 @@ def get_glm_input(**kwargs):
     mmseqs_clust = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(neighborhood_grp)]
 
     mmseqs_clust['strand_neighborhood'] = mmseqs_clust['strand'] + mmseqs_clust['rep'] # each protein in neighborhoods will be reprented by its cluster representative
-
+    mmseqs_clust_grp = mmseqs_clust.groupby('neighborhood_name')
+    
     neighborhood_name_prots = {}
     for neighborhood_name in neighborhood_grp: # loop through neighborhoods to for gLM inputs
-        mmseqs_clust_sub = mmseqs_clust[mmseqs_clust['neighborhood_name'] == neighborhood_name].copy()
+        mmseqs_clust_sub = mmseqs_clust_grp.get_group(neighborhood_name)
         # print("Size of mmseq_clust after filter by neighborhood_grp",len(mmseqs_clust_sub))
-        mmseqs_clust_sub.sort_values(by='start',inplace=True)
         mmseqs_clust_sub.drop_duplicates(subset=['start'],inplace=True) # in case something duplicate rows were made w/ earlier mmseqs merge
-        center = mmseqs_clust_sub.VF_center.iloc[0] + '!!!' + mmseqs_clust_sub.gff.iloc[0] 
         mmseqs_clust_sub.reset_index(drop=True,inplace=True)
+        center = mmseqs_clust_sub.VF_center.iloc[0] + '!!!' + mmseqs_clust_sub.gff.iloc[0] 
+        mmseqs_clust_sub.sort_values(by='start',inplace=True) # this needs to be last in the loop. B/c reset_index reshuffles row locations
         ind = np.flatnonzero([mmseqs_clust_sub['prot_gffname']==center]) # index of the VF center in the neighborhood used for identifying its embedding in gLM output
         if len(ind) > 1:
             logger.warning(f"Multiple VF centers with the same name found in neighborhood: {neighborhood_name} ... grabing first vf_center")
 
         # assert int(mmseqs_clust_sub.start.iloc[-1]) -  int(mmseqs_clust_sub.start.iloc[0]) < args.neighborhood_size + 30000 # want to make sure that everything is working right, so if neighborhoods are much larger than expected, someting's wrong
-        
-        neighborhood_name_prots[neighborhood_name] = [';'.join(list(mmseqs_clust_sub.strand_neighborhood)),ind[0]]
+        try:
+            neighborhood_name_prots[neighborhood_name] = [';'.join(list(mmseqs_clust_sub.strand_neighborhood)),ind[0]]
+        except TypeError:
+            print("===== ",neighborhood_name," =====")
+            print(mmseqs_clust_sub['prot_gffname'])
+            print(mmseqs_clust_sub)
+            raise Exception
 
     df = pd.DataFrame.from_dict(neighborhood_name_prots).T
     df.columns=['neighborhood','VF_center_index']
 
-    if vfdb:
-        # want vf categories in the results so that downstream classification is easier
-        neighborhood_res = neighborhood_res[neighborhood_res["query"] == query][['vf_name','vf_id','vf_subcategory','vf_category','vfdb_species','vfdb_genus']]
-        df["vf_name"],df["vf_id"],df["vf_subcategory"],df["vf_category"],df["vfdb_species"],df["vfdb_genus"] = neighborhood_res.iloc[0][0],neighborhood_res.iloc[0][1],neighborhood_res.iloc[0][2],neighborhood_res.iloc[0][3],neighborhood_res.iloc[0][4],neighborhood_res.iloc[0][5]
-    else:
-        df["vf_name"],df["vf_id"],df["vf_subcategory"],df["vf_category"],df["vfdb_species"],df["vfdb_genus"] = "non_vf","non_vf","non_vf","non_vf","non_vf","non_vf"
+    # if vfdb:
+    #     # want vf categories in the results so that downstream classification is easier
+    #     neighborhood_res = neighborhood_res[neighborhood_res["query"] == query][['vf_name','vf_id','vf_subcategory','vf_category','vfdb_species','vfdb_genus']]
+    #     df["vf_name"],df["vf_id"],df["vf_subcategory"],df["vf_category"],df["vfdb_species"],df["vfdb_genus"] = neighborhood_res.iloc[0][0],neighborhood_res.iloc[0][1],neighborhood_res.iloc[0][2],neighborhood_res.iloc[0][3],neighborhood_res.iloc[0][4],neighborhood_res.iloc[0][5]
+    # else:
+    #     df["vf_name"],df["vf_id"],df["vf_subcategory"],df["vf_category"],df["vfdb_species"],df["vfdb_genus"] = "non_vf","non_vf","non_vf","non_vf","non_vf","non_vf"
     #df_name = f"{neighborhood_res.iloc[0][1].replace(' ','_').replace(')','').replace('(','').replace('/','|')}_{str(random.randint(1,10000))}_{neighborhood_name}"
     df_name = query
-    df.to_csv(f"{args.out}{glm_input_dir}/{df_name}.tsv",sep='\t',header=False,mode="x")
-
-    og_fasta = SeqIO.parse(combinedfasta_ref,"fasta")
+    df.to_csv(f"{args.out}{glm_input_dir}/{df_name}.tsv",sep='\t',header=False,mode="x")    
     
-    if args.query_fasta: # might break, i think this if statement should work if genomes mode is called
-        fasta = filter(lambda x: x.id.split('|')[-1] in list(mmseqs_clust.rep),og_fasta) 
-    else:
+    return 
+
+def get_glm_fasta_input(fasta_path,args,glm_input_dir,**kwargs):
+    query_grp = kwargs.get("query_grp",None)
+    protids = kwargs.get('protids',None)
+    chunk_it = kwargs.get('it',None)
+    
+    if protids: 
+        og_fasta = SeqIO.parse(fasta_path,"fasta")
+        fasta = filter(lambda x: x.id.split('|')[-1] in list(protids),og_fasta)
+        fasta_outpath = f"{glm_input_dir}combined_chunk_{str(chunk_it)}.fasta"
+
+    elif query_grp:
+        df_name,grp = query_grp[0],query_grp[1]
         fasta = []
-        valid_reps = set(mmseqs_clust.rep.values)
-        for rec in og_fasta:
+        valid_reps = set(grp.rep.values)
+        for rec in fasta_path:
             rec.id = rec.id.split('|')[-1]
             if rec.id in valid_reps:
                 fasta.append(rec)
-    with open(f"{args.out}{glm_input_dir}/{df_name}.fasta","x") as handle: #tsv and fasta files should have the same name
+        fasta_outpath = f"{args.out}{glm_input_dir}/{df_name}.fasta"
+        
+    with open(fasta_outpath,"x") as handle: #tsv and fasta files should have the same name
         SeqIO.write(fasta, handle, "fasta")
-    return 
+    return
 
-def concat_tsv_fastas(directory, args, logger, chunk_size=5000):
+def concat_tsv_fastas(directory, glm_input2_out, chunk, i):
     # this is a tempory fix for slow embedding computations...I discovered that embeddings are slow b/c its starting then processing one file at a time
     # the real fix should modify glm_input_frm_neighbors.py so that this function function doesn't need to happen
     tsv_files = nc.glob.glob(f"{directory}/*.tsv")
-    fasta_files = nc.glob.glob(f"{directory}/*.fasta")
+    # fasta_files = nc.glob.glob(f"{directory}/*.fasta")
+    chunk_files = [f for f in tsv_files if f.split('/')[-1].split('.tsv')[0] in chunk]
 
-    glm_input2_out = f"{args.out}glm_input2/"
-    try:
-        nc.os.mkdir(glm_input2_out) # should return an error if the path already exists, incase program finished in the middle of creating inputs, restart from here
-    except FileExistsError as e: # if running w/ resume and glm_inputs directory is already made, clear it then make inputs from the beginning
-        logger.error(e)
-        logger.debug("Removing contents from glm inputs2 directory then recreating..")
-        shutil.rmtree(glm_input2_out) # switched to shutil and os here b/c subprocess wasn't finding directory to remove for whatever reason
-        nc.os.mkdir(glm_input2_out)
-    
-    for i in range(0, len(tsv_files), chunk_size):
-        chunk_files = tsv_files[i:i + chunk_size]
-        fasta_chunks = sum([list(SeqIO.parse(fasta,'fasta')) for fasta in fasta_files[i:i + chunk_size]],[])
+    output_file = f"{glm_input2_out}combined_chunk_{str(i)}.tsv"
 
-        output_file = f"{glm_input2_out}combined_chunk_{i//chunk_size + 1}.tsv"
-        output_fasta = f"{glm_input2_out}combined_chunk_{i//chunk_size + 1}.fasta"
-
-        # Use cat to concatenate files directly
-        cmd = ['cat'] + chunk_files
+    # Use cat to concatenate files directly
+    cmd = ['cat'] + chunk_files
         
-        with open(output_file, 'w') as outfile:
-            nc.subprocess.run(cmd, stdout=outfile, check=True)
-        SeqIO.write(fasta_chunks,output_fasta,'fasta')
+    with open(output_file, 'w') as outfile:
+        nc.subprocess.run(cmd, stdout=outfile, check=True)
         
-        print(f"Processed chunk {i//chunk_size + 1}: {len(chunk_files)} files")
-
-    shutil.rmtree(directory) # remove originial glm_inputs dir to save file space
-    shutil.move(glm_input2_out, directory)
+    print(f"Processed chunk {i}: {len(chunk_files)} files")
     return 
