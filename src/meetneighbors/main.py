@@ -145,198 +145,7 @@ def workflow(parser):
         
         if args.genomes:
             args.genomes = check_dirs(args.genomes)[0]
-
-
-    if args.subcommand == "extract_neighbors":
-        faa_dir = f"{args.genomes}*.faa"
-        logger = get_logger(args.subcommand,args.out)
-        logger.debug("Extracting neighborhoods...")
-        removed_prot_gffs,tmpd = [], None # used later to check for removed neighborhoods via temp files
-
-        if not args.plt_from_saved:
-            if not args.genomes_db:
-                if (not os.path.isfile(genomes_db) and args.resume) or (not args.resume):
-                    logger.debug("Creating genome database with mmesqs...")
-                    subprocess.run(f"mmseqs createdb {faa_dir} {genomes_db} -v 2",shell=True,check=True)
-
-                    # mmseq gpu commented out until mmseqs group releases fix
-                    # if args.gpu:
-                    #     subprocess.run(f"mmseqs makepaddedseqdb {genomes_db} {genomes_db}_gpu --threads {args.threads}",shell=True,check=True)
-                    #     subprocess.run(f"rm {genomes_db}.*",shell=True,check=True) # base db file made from mmseqs is kept b/c if i rm it with the same strategy, I remove the gpu db as well
-                    #     genomes_db = f"{genomes_db}_gpu"
-                    
-            if (not os.path.isfile(f"{args.out}queryDB") and args.resume) or (not args.resume):
-                logger.debug("Creating query database with mmesqs...")
-                subprocess.run(["mmseqs","createdb",args.query_fasta,f"{args.out}queryDB","-v","2"],check=True)
-
-            if (not os.path.isfile(f"{args.out}vfs_in_genomes.tsv") and args.resume) or (not args.resume):
-                logger.debug("Searching for queries in genome database with mmesqs...")
-                # if args.gpu:
-                #     subprocess.run(f"mmseqs search {args.out}queryDB {genomes_db} {args.out}vfs_in_genomes {args.out}tmp_search --min-seq-id {args.seq_id} --cov-mode 0 -c {args.cov} -v 2  --split-memory-limit {int(args.mem * (2/3))}G --alignment-mode 3 --gpu {args.gpu}",shell=True,check=True)
-                # else:
-                subprocess.run(f"mmseqs search {args.out}queryDB {genomes_db} {args.out}vfs_in_genomes {args.out}tmp_search --min-seq-id {args.seq_id} --cov-mode 0 -c {args.cov} -v 2 --split-memory-limit {int(args.mem * (2/3))}G --threads {args.threads} --alignment-mode 3 --start-sens 1 --sens-steps 3 -s 7"
-        ,shell=True,check=True)
-                subprocess.run(["mmseqs", "convertalis", f"{args.out}queryDB", f"{genomes_db}", f"{args.out}vfs_in_genomes", f"{args.out}vfs_in_genomes.tsv", "--format-output", "query,target,evalue,pident,qcov,fident,alnlen,qheader,theader,tset,tsetid"] 
-        ,check=True)
-            
-            if (not os.path.isfile(f"{args.out}combined_fastas_clust_res.tsv") and args.resume) or (not args.resume):
-                mmseqs_grp_db,mmseqs_search = n.read_search_tsv(vfdb=args.from_vfdb,input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
-                logger.info(f"Number of query proteins with hits: {len(set(mmseqs_search['query']))}")
-
-                tmpd = tempfile.mkdtemp(dir=args.out,prefix='tempdir_')
-
-                logger.debug(f"Pulling neighborhoods with {args.threads} threads...")
-                neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, mmseqs_groups = mmseqs_grp_db,head_on=args.head_on,intergenic_cutoff=args.intergenic)
-                
-                tmpfiles = glob.glob('tempdir_*/*') # should probably use pathlib for this or os.path.join?
-                for tmpf_path in tmpfiles:
-                    with open(tmpf_path,'r') as tmpf:
-                        removed_prot_gffs.extend(tmpf.read().splitlines())
-
-                neighborhood_db = neighborhood_db.flatten()
-                n.run_fasta_from_neighborhood(logger,args,dir_for_fasta=args.genomes,neighborhood=neighborhood_db,
-                                            fasta_per_uniq_neighborhood=args.fasta_per_neighborhood,out_folder=args.out,threads=args.threads)
-                logger.debug("Clustering proteins found in all neighborhoods...")
-                subprocess.run(f"mmseqs createdb {args.out}combined_fasta_partition* {args.out}combined_fastas_db -v 2",shell=True,check=True)
-                # hard coded some clustering params b/c the goal is to reduce redundant proteins, added Connected component clustering argument
-                subprocess.run(f"mmseqs cluster {args.out}combined_fastas_db {args.out}combined_fastas_clust --cov-mode 0 -c 0.90 --min-seq-id 0.90 --similarity-type 2 -v 2 --split-memory-limit {int(args.mem * (2/3))}G --threads {args.threads} --cluster-mode 1 {args.out}tmp_clust",
-                                shell=True,check=True)
-                subprocess.run(f"mmseqs createtsv {args.out}combined_fastas_db {args.out}combined_fastas_db {args.out}combined_fastas_clust {args.out}combined_fastas_clust_res.tsv"
-        ,shell=True,check=True)
-                
-                # prepare directory for mmseqs_clust file, here before below if so we don't hit the mkdir error
-                subprocess.run(f"mkdir {args.out}clust_res_in_neighborhoods",shell=True,check=True)
-
-            if (len(glob.glob(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv"))==0 and args.resume) or (not args.resume):
-                mmseqs_grp_db,mmseqs_search = n.read_search_tsv(vfdb=args.from_vfdb,input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
-                
-                # turning mmseqs_search into a dask dataframe was causing an error
-                # mmseqs_search = dd.from_pandas(mmseqs_search,npartitions=args.threads) # make it a dask dataframe there instad of in read_search_tsv() b/c its much easier to run
-                # logger.debug("Reading in dataframe of clustered proteins from neighborhoods...")
-                mmseqs_clust = pn.prep_cluster_tsv(f"{args.out}combined_fastas_clust_res.tsv",logger)
-                logger.debug(f"Total number of neighborhoods found: {len(set(mmseqs_clust['neighborhood_name']))}")
-                
-
-                if args.red_olp:
-                    # reduce the number of neighborhoods that overalp in terms of location on the same chromosome
-
-                    # first should remove neighborhoods with the same start and end positions.
-                    non_redundant_nns = list(mmseqs_clust.drop_duplicates(subset=["neighborhood_name"]).drop_duplicates(subset=["locus_range"])['neighborhood_name'])
-                    mmseqs_clust = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(non_redundant_nns)]
-                    mmseqs_groups = list(mmseqs_clust.groupby(['gff', 'strand', 'seq_id'])) #cant groupby on its own with dask
-                    mmseqs_groups = db.from_sequence(mmseqs_groups,npartitions=args.threads)
-                    mmseqs_clust = db.map(pn.reduce_overlap,mmseqs_groups,window=args.olp_window)
-                    del mmseqs_groups # save ram
-                    mmseqs_clust = pd.concat(mmseqs_clust.compute())
-                    logger.debug(f"Clustering df size after reducing number of overlapping neighborhoods: {mmseqs_clust.shape}")
-                    logger.debug(f"Total number of neighborhoods after reducing number of overlapping neighborhoods: {len(set(mmseqs_clust['neighborhood_name']))}")
-                del mmseqs_grp_db
-                
-                if (args.resume and len(removed_prot_gffs) == 0): # case if resume is called, and temp obj needs to recreated
-                    try:
-                        tmpfiles_backup = glob.glob(f"{args.out}tempdir_*/protgff_*")
-                        for tmpf_path in tmpfiles_backup:
-                            with open(tmpf_path,'r') as tmpf:
-                                removed_prot_gffs.extend(tmpf.read().splitlines())
-                        
-                        if args.remove_temp:
-                            shutil.rmtree(os.path.dirname(tmpfiles_backup)[0])
-                    except Exception as e: # if the delete temp dir command was given
-                        logger.error(e)
-
-                mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search,args.from_vfdb,removed_prot_gffs,logger)
-
-                if args.remove_temp and tmpd != None:
-                    shutil.rmtree(tmpd)
-
-                # mmseqs_clust = client.persist(mmseqs_clust)
-                mmseqs_clust.to_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",index=False,sep="\t")
-                mmseqs_clust = mmseqs_clust.compute()
-            
-            elif len(glob.glob(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv"))>0 and args.resume:
-                mmseqs_clust = dd.read_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust_*.tsv",sep="\t",dtype={'query': 'object',
-                                                                                                                      'vf_category': 'object','vf_id': 'object',
-                                                                                                                      'vf_name': 'object','vf_subcategory': 'object',
-                                                                                                                      'vfdb_genus': 'object','vfdb_species': 'object'})
-                # mmseqs_clust = client.persist(mmseqs_clust)
-                mmseqs_clust = mmseqs_clust.compute() #reading with dask then computing is usually faster than read w/ pandas
-                logger.info(f"Size of mmseqs cluster results after merge with search results: {mmseqs_clust.shape}")
-            
-            # make mmseqs_clust more memory efficient
-            if 'vf_category' in mmseqs_clust.columns:
-                mmseqs_clust = mmseqs_clust.astype({'query':'category','vf_category': 'category','vf_id': 'category',
-                                                    'vf_name': 'category','vf_subcategory': 'category','vfdb_genus': 'category','vfdb_species': 'category'})
-            else:
-                mmseqs_clust = mmseqs_clust.astype({'query':'category'})
-            
-            warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
-            cluster_neighborhoods_by = "query"
-            logger.debug("Creating groups of neighborhoods by their originial query")
-            mmseqs_clust_nolink_groups = pn.get_query_neighborhood_groups(mmseqs_clust,cluster_neighborhoods_by)
-
-            # run several analyses on neighborhoodss
-            class_objs = {vf:pn.VF_neighborhoods(logger,mmseqs_clust_group,query=vf,dbscan_eps=0.15,dbscan_min=3)
-                        for vf,mmseqs_clust_group in mmseqs_clust_nolink_groups}
-            neighborhood_plt_df = pd.DataFrame.from_dict([class_objs[n].to_dict() for n in class_objs])
-            neighborhood_plt_df = neighborhood_plt_df[neighborhood_plt_df['total_hits']>args.min_hits]
-            neighborhood_plt_df['bubble_size'] = (100/(neighborhood_plt_df['noise']+1)).astype(int)
-            del mmseqs_clust_nolink_groups
-
-            if args.from_vfdb:
-                # add vf info to neighborhood queries for glm embed color coding and other plotting
-                mmseqs_clust_formerge = mmseqs_clust.drop_duplicates(subset=["query"])
-                neighborhood_plt_df = pd.merge(neighborhood_plt_df,mmseqs_clust_formerge[['query','vf_name','vf_id','vf_subcategory','vf_category','vfdb_species','vfdb_genus']],on='query',how='left')
-            neighborhood_plt_df.to_csv(f"{args.out}neighborhood_results_df.tsv",sep='\t',index=False,header=True)
-
-            if args.glm:
-                # take neighborhoods in class_objs and prep them to be fed into gLM for embeddings
-                try:
-                    glm_input_out = f"glm_inputs_{args.glm_cluster}_jaccard{str(args.glm_threshold)[1:]}/"
-                    os.mkdir(args.out + glm_input_out) # should return an error if the path already exists, incase program finished in the middle of creating inputs, restart from here
-                except FileExistsError as e: # if running w/ resume and glm_inputs directory is already made, clear it then make inputs from the beginning
-                    logger.error(e)
-                    logger.debug("Removing contents from glm inputs directory then recreating..")
-                    shutil.rmtree(args.out + glm_input_out) # switched to shutil and os here b/c subprocess wasn't finding directory to remove for whatever reason
-                    os.mkdir(args.out + glm_input_out)
-
-                logger.debug("Grabbing cluster representatives...")
-                if not os.path.isfile(f"{args.out}combined_fastas_clust_rep.fasta"): # save time if resuming
-                    subprocess.run(f"mmseqs createsubdb {args.out}combined_fastas_clust {args.out}combined_fastas_db {args.out}combined_fastas_clust_rep",shell=True,check=True)
-                    subprocess.run(f"mmseqs convert2fasta {args.out}combined_fastas_clust_rep {args.out}combined_fastas_clust_rep.fasta",shell=True,check=True)
-
-                # reduce the number of similar neighborhoods by the amount of similar protein with a given threshold
-                uniq_neighborhoods_d = {query:class_objs[query].get_neighborhood_names(args.glm_threshold,args.glm_cluster,logger) for query in class_objs}
-                # get an idea of the number of filtered out neighborhoods that the glm will NOT see
-                mmseqs_groups = mmseqs_clust.groupby('query')['neighborhood_name'].apply(list).to_dict()
-                neighborhood_diff = {query:[len(mmseqs_groups[query]),len(uniq_neighborhoods_d[query])] for query in uniq_neighborhoods_d}
-                pd.DataFrame.from_dict(neighborhood_diff,orient='index',columns=["Total_Neighborhoods","Total_Representative_Neighborhoods"]).to_csv(f"{args.out}Number_filtrd_Neighborhoods.tsv",sep="\t")
-                
-                # mmseqs cluster df can be really big, and can cause OOM issues when passed to so many threads. So I split up the df in "its" that should fit into mem
-                logger.debug("Grabbing tsvs for glm input...")
-                mmseqs_clust_mem = mmseqs_clust.memory_usage(deep=True).sum() / 10**8 # get mmseqs clust memory interms of GB 
-                its = 1
-                qs_for_glm = np.array(list(uniq_neighborhoods_d.keys()))
-                while (mmseqs_clust_mem/its) * args.threads > args.mem:
-                    its+=1
-                qs_for_glm = np.array_split(qs_for_glm,its)
-
-                # get the glm inputs for all neighborhoods, by iterating through a "chunk" number of neighborhoods
-                logger.debug(f"Splitting mmseqs clustering df into {its} chunks...")
-                for chunk in qs_for_glm:
-                    neighborhoods_to_subset_for = sum([mmseqs_groups[q] for q in chunk],[])
-                    mmseqs_clust_sub = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(neighborhoods_to_subset_for)]
-                    q_db = db.from_sequence(chunk,npartitions=args.threads)
-                    db.map(glm.get_glm_input,query=q_db,
-                        uniq_neighborhoods_d=uniq_neighborhoods_d,neighborhood_res=neighborhood_plt_df,mmseqs_clust=mmseqs_clust_sub,glm_input_dir=glm_input_out,vfdb=args.from_vfdb,logger=logger,args=args).persist()
-                    
-        elif args.plt_from_saved:
-            neighborhood_plt_df = pd.read_csv(args.plt_from_saved,sep='\t')
-        if args.plot:
-            pn.plt_neighborhoods(neighborhood_plt_df,args.out,vfdb=args.from_vfdb)
-            pn.plt_hist_neighborh_clusts(neighborhood_plt_df,args.out)
-            pn.plt_regline_scatter(neighborhood_plt_df,args.out)
-            pn.plt_box_entropy(neighborhood_plt_df,out=args.out,vfdb=args.from_vfdb)
-
+        
     
     if args.subcommand == "compare_neighborhoods":
         logger = get_logger(args.subcommand,args.out)
@@ -391,7 +200,7 @@ def workflow(parser):
         db.map(glm.get_glm_input,query=query_db,mmseqs_clust=mmseqs_clust,combinedfasta=singular_combinedfasta,glm_input_dir=glm_input_out,
                logger=logger,args=args).compute()
     
-    if args.subcommand == 'predictvf':
+    if (args.subcommand == 'predictvf') or (args.subcommand == "extract_neighbors"):
         logger = get_logger(args.subcommand,args.out)
         pkl_objs = l.load_pickle()
         
@@ -527,7 +336,7 @@ def workflow(parser):
             ) for file in tsvs_to_getembeds if file.split('/')[-1].split('.tsv')[0] not in computed_embed_names] # i think using dask is causing the use of a ton of mem, and since prots are already chunked, this should be pretty fast
 
             if args.memory_optimize:
-                glm_res_d_vals_predf =  cu.unpack_embeddings(args.out+glm_ouputs_out,args.out+glm_input_out,mmseqs_clust,mem_optimize=nn_hash)
+                glm_res_d_vals_predf = cu.unpack_embeddings(args.out+glm_ouputs_out,args.out+glm_input_out,mmseqs_clust,mem_optimize=nn_hash)
             else:
                 glm_res_d_vals_predf =  cu.unpack_embeddings(args.out+glm_ouputs_out,args.out+glm_input_out,mmseqs_clust)
             embedding_df_merge = cu.get_glm_embeddf(glm_res_d_vals_predf)
@@ -541,93 +350,67 @@ def workflow(parser):
                 singular_combinedfasta = f"{args.out}combined.fasta"
             logger.debug('gLM embedding data found, loading tsv')
             embedding_df_merge = pd.read_csv(f"{args.out}glm_embeds.tsv",sep="\t")
-
-        lb = pkl_objs['labelbinarizer_vfcategories.obj']
-        models_dict = l.load_clf_models()
-        nn_preds_res = nc.get_embed_preds(embedding_df_merge,models_dict['nn_clf'],lb=lb,args=args)
-        if args.memory_optimize:
-            # nn_hash = pkl.load(open(f'{args.out}nnhash_mapping.obj','rb'))
-            # mapping back hashes with preds df instead of mmseqsclust b/c mmseqsclust is large
-            logger.debug("Returning hashed out duplicate neighborhoods...")
-            nn_preds_res.drop(columns='query',inplace=True)
-            mmseqs_clust_sub = mmseqs_clust.loc[mmseqs_clust['prot_gffname'] == (mmseqs_clust['VF_center'] +'!!!'+ mmseqs_clust['gff'])] # take only the rows that have a VF_center to make sure we're mapping the correct nn to query
-            logger.debug(f"Number of queries, and number of neighborhoods in dataset: {len(set(mmseqs_clust_sub['query']))} and {len(set(mmseqs_clust_sub['neighborhood_name']))}")
-            nn_preds_res = pd.merge(nn_preds_res,mmseqs_clust_sub[['query','neighborhood_name','nn_hashes']],on='neighborhood_name',how='left')
-            assert len(nn_preds_res[nn_preds_res['query'].isna()]) == 0, "Query names or missing post merge."
-            nn_preds_res = nn_preds_res[['query','neighborhood_name','nn_hashes'] + list(lb.classes_)] # set order of columns for potential struct classification and integrated
-            # yes map back hashes to predictions
-            # now create dictionary with hash to predictions
-            # also have dictionary mapping hashes to query and nns
-            # create a df of query to nn to hash
-            # then map hash to predictions in new df
-            # In this new df, remove any nns that are in nn_preds_res
-            # then simply concat the dfs. 
-
-            # nn_preds_res_grps = nn_preds_res.groupby('nn_hashes')
-            # passing_hashes = nn_preds_res_grps.groups.keys()
-            # nns_with_preds = set(nn_preds_res['neighborhood_name'])
-
-            # nnhash_q_nn_df = pd.DataFrame([(k, *vals) for k, lst in nn_hash.items() for vals in lst],columns=['nn_hashes','query','neighborhood_name']) 
-            # nn_hash_df = pd.merge(nnhash_q_nn_df,nn_preds_res[list(lb.classes_) + ['nn_hashes']],on='nn_hashes')
-            # nn_hash_df = nn_hash_df[~nn_hash_df['neighborhood_name'].isin(set(nn_preds_res['neighborhood_name']))] # remove nns already in nn_preds_res
-
-            # nn_hash_df = nn_hash_df[nn_preds_res.columns]
             
-            # nn_preds_res = pd.concat([nn_preds_res,nn_hash_df],ignore_index=True)
+        if args.subcommand == 'predictvf':
+            lb = pkl_objs['labelbinarizer_vfcategories.obj']
+            models_dict = l.load_clf_models()
+            nn_preds_res = nc.get_embed_preds(embedding_df_merge,models_dict['nn_clf'],lb=lb,args=args)
+
+            logger.debug(f"Number of queries, and number of neighborhoods in dataset respectively: {len(set(mmseqs_clust['query']))} and {len(set(mmseqs_clust['neighborhood_name']))}")
             logger.debug(f"Number of queries, and number of neighborhoods with predictions respectively: {len(set(nn_preds_res['query']))} and {len(set(nn_preds_res['neighborhood_name']))}")
 
-        logger.debug("Saving neighborhood based predictions to a .tsv file...")
-        nn_preds_res.to_csv(f"{args.out}neighborhood_based_predictions.tsv",sep="\t",index=False)
+            logger.debug("Saving neighborhood based predictions to a .tsv file...")
+            nn_preds_res.to_csv(f"{args.out}neighborhood_based_predictions.tsv",sep="\t",index=False)
 
-        if args.remove_temp:
-            try: 
-                shutil.rmtree(tmpd)
-            except:
-                logger.warning("Could not delete temporary directory")
+            if args.remove_temp:
+                try: 
+                    shutil.rmtree(tmpd)
+                except:
+                    logger.warning("Could not delete temporary directory")
 
-        if not args.foldseek_structs: # if predicting w/ no structures, end the function w/ only neighborhood based predictions
-            logger.debug(f"Done! Took --- %s seconds --- to complete" % (time.time() - start_time))
-            return 
-        # pull together structure search results
-        logger.debug("Foldseek search query proteins against VF and NS database...")
+            if not args.foldseek_structs: # if predicting w/ no structures, end the function w/ only neighborhood based predictions
+                logger.debug(f"Done! Took --- %s seconds --- to complete" % (time.time() - start_time))
+                return 
+            # pull together structure search results
+            logger.debug("Foldseek search query proteins against VF and NS database...")
 
-        struct_search_raw = sc.foldseek_search(args)
-        tsvs_d = l.load_vf_functional_mappers()
-        vfid_mapping,vfquery_vfid = tsvs_d['VFID_mapping_specified.tsv'],tsvs_d['vfquery_to_id_tocat.tsv']
-        struct_search = sc.format_search([struct_search_raw],meta = ['q_vn'],vfquery_vfid=vfquery_vfid,vfmap_df=vfid_mapping)
-        struct_search = sc.format_searchlabels(struct_search)
-        struct_search.to_csv(f"{args.out}foldseek_search_labelsmapped.tsv",sep="\t",index=False)
+            struct_search_raw = sc.foldseek_search(args)
+            tsvs_d = l.load_vf_functional_mappers()
+            vfid_mapping,vfquery_vfid = tsvs_d['VFID_mapping_specified.tsv'],tsvs_d['vfquery_to_id_tocat.tsv']
+            struct_search = sc.format_search([struct_search_raw],meta = ['q_vn'],vfquery_vfid=vfquery_vfid,vfmap_df=vfid_mapping)
+            struct_search = sc.format_searchlabels(struct_search)
+            struct_search.to_csv(f"{args.out}foldseek_search_labelsmapped.tsv",sep="\t",index=False)
 
-        logger.debug("Collecting best structural similarity for each functional group if exists...")
-        struct_search_queries = set(struct_search['query'])
-        logger.info(f"Structure-based search results for {len(set(nn_preds_res['query']) - struct_search_queries)} queries could not be found...") # i should default these missing similarities to the nn preds
-        queries_db = db.from_sequence(struct_search_queries,npartitions = args.threads)
-        pred_raw = db.map(sc.alltopNhits_probs_threadable,queries_db,df=struct_search[['query','target','mean_score','tvf_category']],score_metric="mean_score",lb=lb).compute()
-        struct_preds_res = sc.format_strucpreds(pred_raw=pred_raw,lb=lb)
-        struct_preds_res.to_csv(f"{args.out}structure_based_predictions.tsv",sep="\t",index=False)
+            logger.debug("Collecting best structural similarity for each functional group if exists...")
+            struct_search_queries = set(struct_search['query'])
+            logger.info(f"Structure-based search results for {len(set(nn_preds_res['query']) - struct_search_queries)} queries could not be found...") # i should default these missing similarities to the nn preds
+            queries_db = db.from_sequence(struct_search_queries,npartitions = args.threads)
+            pred_raw = db.map(sc.alltopNhits_probs_threadable,queries_db,df=struct_search[['query','target','mean_score','tvf_category']],score_metric="mean_score",lb=lb).compute()
+            struct_preds_res = sc.format_strucpreds(pred_raw=pred_raw,lb=lb)
+            struct_preds_res.to_csv(f"{args.out}structure_based_predictions.tsv",sep="\t",index=False)
 
-        logger.debug("Integrating neighborhood and structure based predictions")
-        nn_preds_res.drop(columns=['nn_hashes'],inplace=True) # don't need this col in integrated preds, also, fcks up indexing for integrated preds cols
-        nn_struct_preds = pd.merge(nn_preds_res,struct_preds_res,on='query',how='left')
-        
-        nn_struct_preds.fillna(0.0,inplace=True) # some queries don't show up in structure search b/c no hits. Which is why there are more neighborhoods than struct hits
-        integrated_preds = clf.meta_classifier(nn_struct_preds=nn_struct_preds,model=models_dict['int_clf'],lb=lb)
-
-        if args.include_structhits:
-            mmseqs_clust['true_lc'] = mmseqs_clust['locus_tag'].str.split('!!!').str[0] # b/c these are similar to names used in foldseek search
-
-            # define cutoff for structural hits
-            struct_search_hits = struct_search[(struct_search['tvf_category']!='non_vf') & 
-                                   (((struct_search['qtmscore']>=args.tmcutoff) & (struct_search['ttmscore']>=args.tmcutoff)) | ((struct_search['qcov']>=args.fs_qcovcutoff) & (struct_search['lddt']>=args.lddtcutoff)))]
+            logger.debug("Integrating neighborhood and structure based predictions")
+            nn_preds_res.drop(columns=['nn_hashes'],inplace=True) # don't need this col in integrated preds, also, fcks up indexing for integrated preds cols
+            nn_struct_preds = pd.merge(nn_preds_res,struct_preds_res,on='query',how='left')
             
-            # get a dictionary for the number of VF structural hits in a neighborhood
-            mmseqsclust_structhits = mmseqs_clust[mmseqs_clust['true_lc'].isin(struct_search_hits['query'])]
+            nn_struct_preds.fillna(0.0,inplace=True) # some queries don't show up in structure search b/c no hits. Which is why there are more neighborhoods than struct hits
+            integrated_preds = clf.meta_classifier(nn_struct_preds=nn_struct_preds,model=models_dict['int_clf'],lb=lb)
 
-            hits_per_nn = mmseqsclust_structhits.groupby('neighborhood_name')['true_lc'].apply(len).to_dict() # get the number of structural hits in each neighborhood
-            integrated_preds['nn_struct_hits'] = integrated_preds['neighborhood_name'].map(hits_per_nn) # map hits to neighborhood names
-            integrated_preds['nn_struct_hits'] = integrated_preds['nn_struct_hits'].fillna(0) # fill neighborhoods with no hits with 0
+            if args.include_structhits:
+                mmseqs_clust['true_lc'] = mmseqs_clust['locus_tag'].str.split('!!!').str[0] # b/c these are similar to names used in foldseek search
 
-        integrated_preds.to_csv(f"{args.out}integrated_predictions.tsv",sep="\t",index=False)
+                # define cutoff for structural hits
+                struct_search_hits = struct_search[(struct_search['tvf_category']!='non_vf') & 
+                                    (((struct_search['qtmscore']>=args.tmcutoff) & (struct_search['ttmscore']>=args.tmcutoff)) | ((struct_search['qcov']>=args.fs_qcovcutoff) & (struct_search['lddt']>=args.lddtcutoff)))]
+                
+                # get a dictionary for the number of VF structural hits in a neighborhood
+                mmseqsclust_structhits = mmseqs_clust[mmseqs_clust['true_lc'].isin(struct_search_hits['query'])]
+
+                hits_per_nn = mmseqsclust_structhits.groupby('neighborhood_name')['true_lc'].apply(len).to_dict() # get the number of structural hits in each neighborhood
+                integrated_preds['nn_struct_hits'] = integrated_preds['neighborhood_name'].map(hits_per_nn) # map hits to neighborhood names
+                integrated_preds['nn_struct_hits'] = integrated_preds['nn_struct_hits'].fillna(0) # fill neighborhoods with no hits with 0
+
+            integrated_preds.to_csv(f"{args.out}integrated_predictions.tsv",sep="\t",index=False)
 
 
     if args.subcommand == "compute_umap": # gotta change the functions used for this
