@@ -36,7 +36,7 @@ def get_parser():
     parent_parser.add_argument("--query_fasta","-qf", type=str, default=None, help="Proteins to search and find neighborhoods for")
     parent_parser.add_argument("--seq_id","-s", type=float, required=False, default=0.9, help="Sequence identity for mmseqs search in genomes")
     parent_parser.add_argument("--cov","-c", type=float, required=False, default=0.9, help="Sequence coverage for mmseqs search in genomes")
-    parent_parser.add_argument("--mem","-m", type=int, required=False, default=8, help="Memory")
+    parent_parser.add_argument("--mem","-m", type=int, required=False, default=8, help="Memory in Gb")
     parent_parser.add_argument("--threads", type=int,default=4, help="Number of threads")
     parent_parser.add_argument("--genomes","-g", type=str, required=False, help="Give path to folder w/ gff files and their respective protein file")
     parent_parser.add_argument("--genome_tsv","-gtsv", type=str, required=False, help="Give a tsv defnining paths to gff files and their respective protein fasta with no column names. Must include the columns: 'genome name,protein,gff' ")
@@ -141,7 +141,7 @@ def workflow(parser):
         if args.genomes_db: #not sure how to set this argparse paremeter default to whatever args.genomes is
             genomes_db = args.genomes_db
         else:
-            genomes_db = f"{args.out}genomesDB"
+            genomes_db = f"{args.out}genomesdb"
         
         if args.genomes:
             args.genomes = check_dirs(args.genomes)[0]
@@ -407,7 +407,7 @@ def workflow(parser):
             else:
                 tmpd = tmpd_l[0]
 
-            if (args.resume and not os.path.isdir(f'{args.out}clust_res_in_neighborhoods/mmseqs_clust.tsv')) or (not args.resume):
+            if (args.resume and not os.path.isfile(f'{args.out}clust_res_in_neighborhoods/mmseqs_clust.tsv')) or (not args.resume):
                 logger.debug(f"Pulling neighborhoods...")
                 mmseqs_clust,singular_combinedfasta, nn_hash = nc.pull_neighborhoodsdf(args,tmpd,logger)
             
@@ -423,8 +423,8 @@ def workflow(parser):
                 else:
                     logger.debug('Assuming memory optimize was not called in the previous run..')
 
-            glm_input_out,glm_ouputs_out = "glm_inputs","glm_outputs"
-            if (args.resume and not os.path.isfile(f'{args.out}glm_outputs')) or (not args.resume): # load back variables if resuming
+            glm_input_out,glm_input2_out,glm_ouputs_out = "glm_inputs","glm_input2_out/","glm_outputs" # slashes and non slashes done purposefuly
+            if (args.resume and not os.path.isfile(f'{args.out}glm_embeds.tsv')) or (not args.resume): # load back variables if resuming
                 cluster_neighborhoods_by = "query"
                 logger.debug("Creating groups of neighborhoods by their originial query")
                 mmseqs_clust_nolink_groups = pn.get_query_neighborhood_groups(mmseqs_clust,cluster_neighborhoods_by)
@@ -437,8 +437,17 @@ def workflow(parser):
                     logger.debug("Removing contents from glm inputs directory then recreating..")
                     shutil.rmtree(args.out + glm_input_out) # switched to shutil and os here b/c subprocess wasn't finding directory to remove for whatever reason
                     os.mkdir(args.out + glm_input_out)
+                
+                try:
+                    os.mkdir(args.out + glm_input2_out) # should return an error if the path already exists, incase program finished in the middle of creating inputs, restart from here
+                except FileExistsError as e: # if running w/ resume and glm_inputs directory is already made, clear it then make inputs from the beginning
+                    logger.error(e)
+                    logger.debug("Removing contents from glm inputs2 directory then recreating..")
+                    shutil.rmtree(args.out + glm_input2_out) # switched to shutil and os here b/c subprocess wasn't finding directory to remove for whatever reason
+                    os.mkdir(args.out + glm_input2_out)
+                
 
-                # create tsvs for glm inputs, one tsv per protein
+                # create tsvs for glm inputs, one tsv per query protein
                 # prot_queries = list(set(mmseqs_clust['query'].dropna())) # smh I think I'm going to have to chunk this df? OR maybe I can make it smaller using the hashing?
                 prot_queries = list(uniq_neighborhoods_d.keys()) # i think the issue w/ the above line is that not all queries have a unique neighborhood...especially after some neighborhoods being filtered out..not super sure thoo..especia
                 logger.debug(f"Transforming collected {len(set(prot_queries))} proteins for input into the gLM...")
@@ -451,11 +460,14 @@ def workflow(parser):
                     qs_for_glm = np.array(list(uniq_neighborhoods_d.keys()))
                     while (mmseqs_clust_mem/its) * args.threads > args.mem:
                         its+=1
+                    its+=7 # creating more chunks for faster processing
                     qs_for_glm = np.array_split(qs_for_glm,its)
 
                     # get the glm inputs for all neighborhoods, by iterating through a "chunk" number of neighborhoods
                     logger.debug(f"Splitting mmseqs clustering df into {its} chunks...")
-                    for chunk in qs_for_glm:
+                    # if args.query_fasta:
+                    #     dask.config.set(scheduler='processes')
+                    for i,chunk in enumerate(qs_for_glm):
                         neighborhoods_to_subset_for = [uniq_neighborhoods_d[q] for q in chunk]
                         neighborhoods_to_subset_for = list(set().union(*neighborhoods_to_subset_for))
                         mmseqs_clust_sub = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(neighborhoods_to_subset_for)]
@@ -463,16 +475,43 @@ def workflow(parser):
                         # inputs for get_glm_input() are slightly different here to accomodate for chunks
                         db.map(glm.get_glm_input,query=query_db,mmseqs_clust=mmseqs_clust_sub,combinedfasta=singular_combinedfasta,glm_input_dir=glm_input_out,uniq_neighborhoods_d=uniq_neighborhoods_d,
                                 logger=logger,args=args).compute()
+
+                        protids = set(mmseqs_clust_sub['rep'])
+                        if args.query_fasta or args.prot_genome_pairs: # for only query_fasta and prot_genome_pairs here b/c predicting from genomes already runs pretty fast
+                            glm.get_glm_fasta_input(fasta_path=singular_combinedfasta,
+                                                    glm_input_dir = args.out + glm_input2_out,
+                                                    protids = protids,
+                                                    args=args,it = i)
+                            glm.concat_tsv_fastas(args.out + glm_input_out, args.out + glm_input2_out, chunk=chunk, i = i)
+
+                        else:
+                            query_db = list(mmseqs_clust_sub.groupby('query'))
+                            query_db = db.from_sequence(query_db,npartitions=args.threads)
+                            singular_combinedfasta_l = glm.SeqIO.parse(singular_combinedfasta,'fasta')
+                            singular_combinedfasta_l = list(filter(lambda x: x.id.split('|')[-1] in protids))
+                            db.map(glm.get_glm_fasta_input,fasta_path=singular_combinedfasta_l,
+                                                    glm_input_dir=f"{args.out}glm_input/",
+                                                    query_grp = query_db,
+                                                    args=args).compute()
                         del mmseqs_clust_sub
+                    
                 else:
                     query_db = db.from_sequence(prot_queries,npartitions=args.threads)
                     db.map(glm.get_glm_input,query=query_db,mmseqs_clust=mmseqs_clust,combinedfasta=singular_combinedfasta,glm_input_dir=glm_input_out,uniq_neighborhoods_d=uniq_neighborhoods_d,
-                            logger=logger,args=args).compute()
+                            logger=logger,args=args).compute() # needs to be adjusted for get_glm_fasta_input(), and modified get_glm_input
                 
                 if args.query_fasta or args.prot_genome_pairs: # for only query_fasta and prot_genome_pairs here b/c predicting from genomes already runs pretty fast
-                    glm.concat_tsv_fastas(args.out + glm_input_out, args, logger, chunk_size=5000)
+                        shutil.rmtree(args.out + glm_input_out) # remove originial glm_inputs dir to save file space
+                        shutil.move(glm_input2_out, args.out + glm_input_out)
+                    
             
-                subprocess.run(f"mkdir {args.out}{glm_ouputs_out}/",shell=True)
+                try:
+                    os.mkdir(args.out + glm_ouputs_out) # should return an error if the path already exists, incase program finished in the middle of creating inputs, restart from here
+                except FileExistsError as e: # if running w/ resume and glm_inputs directory is already made, clear it then make inputs from the beginning
+                    logger.error(e)
+                    logger.debug("Removing contents from glm inputs directory then recreating..")
+                    shutil.rmtree(args.out + glm_ouputs_out) # switched to shutil and os here b/c subprocess wasn't finding directory to remove for whatever reason
+                    os.mkdir(args.out + glm_ouputs_out)
 
             logger.debug("Computing pLM embeddings...")
             nc.get_plm_embeds(args.out+glm_input_out, args.out+glm_ouputs_out)
@@ -487,14 +526,10 @@ def workflow(parser):
                 ngpus=args.gpu,bs=args.glm_bs
             ) for file in tsvs_to_getembeds if file.split('/')[-1].split('.tsv')[0] not in computed_embed_names] # i think using dask is causing the use of a ton of mem, and since prots are already chunked, this should be pretty fast
 
-            # files_db = db.from_sequence(files,npartitions=5) #I dont think npartitions matters too much here, number of parllelizes calls will be equal to # of gpus available
-            # files_db = db.from_sequence(files,npartitions=args.gpu) #I dont think npartitions matters too much here, number of parllelizes calls will be equal to # of gpus available
-
-            # res_name = db.map(nc.create_glm_embeds,files_db,args.out+glm_ouputs_out,norm_factors=pkl_objs['norm.pkl'],PCA_LABEL=pkl_objs['pca.pkl'],ngpus=args.gpu,bs=args.glm_bs)
-            # res_name = res_name.compute()
-
-            # mmseqs_clust = pd.read_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust.tsv",sep='\t') # this is already loaded from above?!
-            glm_res_d_vals_predf =  cu.unpack_embeddings(args.out+glm_ouputs_out,args.out+glm_input_out,mmseqs_clust)
+            if args.memory_optimize:
+                glm_res_d_vals_predf =  cu.unpack_embeddings(args.out+glm_ouputs_out,args.out+glm_input_out,mmseqs_clust,mem_optimize=nn_hash)
+            else:
+                glm_res_d_vals_predf =  cu.unpack_embeddings(args.out+glm_ouputs_out,args.out+glm_input_out,mmseqs_clust)
             embedding_df_merge = cu.get_glm_embeddf(glm_res_d_vals_predf)
             embedding_df_merge.to_csv(f"{args.out}glm_embeds.tsv",sep="\t",index=False)
         
@@ -504,17 +539,22 @@ def workflow(parser):
                 singular_combinedfasta = f"{args.out}combined_fastas_clust_rep.fasta" 
             else:
                 singular_combinedfasta = f"{args.out}combined.fasta"
+            logger.debug('gLM embedding data found, loading tsv')
             embedding_df_merge = pd.read_csv(f"{args.out}glm_embeds.tsv",sep="\t")
 
         lb = pkl_objs['labelbinarizer_vfcategories.obj']
         models_dict = l.load_clf_models()
         nn_preds_res = nc.get_embed_preds(embedding_df_merge,models_dict['nn_clf'],lb=lb,args=args)
-        logger.debug(f"Number of queries, and number of neighborhoods with predictions respectively (no dups): {len(set(nn_preds_res['query']))} and {len(set(nn_preds_res['neighborhood_name']))}")
-        if os.path.isfile(f'{args.out}nnhash_mapping.obj'):
-            nn_hash = pkl.load(open(f'{args.out}nnhash_mapping.obj','rb'))
+        if args.memory_optimize:
+            # nn_hash = pkl.load(open(f'{args.out}nnhash_mapping.obj','rb'))
             # mapping back hashes with preds df instead of mmseqsclust b/c mmseqsclust is large
             logger.debug("Returning hashed out duplicate neighborhoods...")
-            nn_preds_res = pd.merge(nn_preds_res,mmseqs_clust[['neighborhood_name','nn_hashes']],on='neighborhood_name',how='left')
+            nn_preds_res.drop(columns='query',inplace=True)
+            mmseqs_clust_sub = mmseqs_clust.loc[mmseqs_clust['prot_gffname'] == (mmseqs_clust['VF_center'] +'!!!'+ mmseqs_clust['gff'])] # take only the rows that have a VF_center to make sure we're mapping the correct nn to query
+            logger.debug(f"Number of queries, and number of neighborhoods in dataset: {len(set(mmseqs_clust_sub['query']))} and {len(set(mmseqs_clust_sub['neighborhood_name']))}")
+            nn_preds_res = pd.merge(nn_preds_res,mmseqs_clust_sub[['query','neighborhood_name','nn_hashes']],on='neighborhood_name',how='left')
+            assert len(nn_preds_res[nn_preds_res['query'].isna()]) == 0, "Query names or missing post merge."
+            nn_preds_res = nn_preds_res[['query','neighborhood_name','nn_hashes'] + list(lb.classes_)] # set order of columns for potential struct classification and integrated
             # yes map back hashes to predictions
             # now create dictionary with hash to predictions
             # also have dictionary mapping hashes to query and nns
@@ -527,31 +567,16 @@ def workflow(parser):
             # passing_hashes = nn_preds_res_grps.groups.keys()
             # nns_with_preds = set(nn_preds_res['neighborhood_name'])
 
-            nnhash_q_nn_df = pd.DataFrame([(k, *vals) for k, lst in nn_hash.items() for vals in lst],columns=['nn_hashes','query','neighborhood_name']) 
-            nn_hash_df = pd.merge(nnhash_q_nn_df,nn_preds_res[list(lb.classes_) + ['nn_hashes']],on='nn_hashes')
-            nn_hash_df = nn_hash_df[~nn_hash_df['neighborhood_name'].isin(set(nn_preds_res['neighborhood_name']))] # remove nns already in nn_preds_res
-            print(nn_hash_df.head(),flush=True)
-            print(nn_preds_res.head(),flush=True)
-            nn_hash_df = nn_hash_df[nn_preds_res.columns]
-            
-            nn_preds_res = pd.concat([nn_preds_res,nn_hash_df],ignore_index=True)
-            logger.debug(f"Number of queries, and number of neighborhoods with predictions respectively (with neighborhoods that were duplicated across queries): {len(set(nn_preds_res['query']))} and {len(set(nn_preds_res['neighborhood_name']))}")
+            # nnhash_q_nn_df = pd.DataFrame([(k, *vals) for k, lst in nn_hash.items() for vals in lst],columns=['nn_hashes','query','neighborhood_name']) 
+            # nn_hash_df = pd.merge(nnhash_q_nn_df,nn_preds_res[list(lb.classes_) + ['nn_hashes']],on='nn_hashes')
+            # nn_hash_df = nn_hash_df[~nn_hash_df['neighborhood_name'].isin(set(nn_preds_res['neighborhood_name']))] # remove nns already in nn_preds_res
 
-            # rows_to_add = []
-            # for nn in nn_hash:
-            #     if nn in nns_with_preds:
-            #         # skip neighborhoors where there's already predictions for
-            #         continue
-            #     if nn_hash[nn] in passing_hashes:
-            #         pred_row = nn_preds_res_grps.get_group(nn_hash[nn]).iloc[0]
-            #         pred_row['neighborhood_name'] = nn # replace old nn with the one it replaced
-            #         rows_to_add.append(pred_row)
-            # # rows_to_add = pd.DataFrame(rows_to_add,columns = nn_preds_res.columns)
-            # nn_preds_res = pd.concat([nn_preds_res, pd.DataFrame(rows_to_add)], ignore_index=True)
-            # nn_preds_res.drop_duplicates(subset='neighborhood_name',inplace=True)
+            # nn_hash_df = nn_hash_df[nn_preds_res.columns]
+            
+            # nn_preds_res = pd.concat([nn_preds_res,nn_hash_df],ignore_index=True)
+            logger.debug(f"Number of queries, and number of neighborhoods with predictions respectively: {len(set(nn_preds_res['query']))} and {len(set(nn_preds_res['neighborhood_name']))}")
 
         logger.debug("Saving neighborhood based predictions to a .tsv file...")
-        nn_preds_res.drop_duplicates(subset='neighborhood_name',inplace=True)
         nn_preds_res.to_csv(f"{args.out}neighborhood_based_predictions.tsv",sep="\t",index=False)
 
         if args.remove_temp:
@@ -575,13 +600,14 @@ def workflow(parser):
 
         logger.debug("Collecting best structural similarity for each functional group if exists...")
         struct_search_queries = set(struct_search['query'])
-        logger.info(f"Structure-based search results for {len(set(nn_preds_res['query']) - struct_search_queries)} queries could not be found...")
+        logger.info(f"Structure-based search results for {len(set(nn_preds_res['query']) - struct_search_queries)} queries could not be found...") # i should default these missing similarities to the nn preds
         queries_db = db.from_sequence(struct_search_queries,npartitions = args.threads)
         pred_raw = db.map(sc.alltopNhits_probs_threadable,queries_db,df=struct_search[['query','target','mean_score','tvf_category']],score_metric="mean_score",lb=lb).compute()
         struct_preds_res = sc.format_strucpreds(pred_raw=pred_raw,lb=lb)
         struct_preds_res.to_csv(f"{args.out}structure_based_predictions.tsv",sep="\t",index=False)
 
         logger.debug("Integrating neighborhood and structure based predictions")
+        nn_preds_res.drop(columns=['nn_hashes'],inplace=True) # don't need this col in integrated preds, also, fcks up indexing for integrated preds cols
         nn_struct_preds = pd.merge(nn_preds_res,struct_preds_res,on='query',how='left')
         
         nn_struct_preds.fillna(0.0,inplace=True) # some queries don't show up in structure search b/c no hits. Which is why there are more neighborhoods than struct hits

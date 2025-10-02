@@ -36,11 +36,14 @@ import meetneighbors.ring_mmseqs as mm
 
 def pull_neighborhoodsdf(args,tmpd,logger):
 
-    if args.cluster:
-        file_to_check = f'{args.out}combined_fastas_clust_res.tsv'
-    else:
-        file_to_check = f"{args.out}combined.fasta"
-
+    if args.resume:
+        if args.cluster:
+            file_to_check = f'{args.out}combined_fastas_clust_res.tsv'
+        else:
+            file_to_check = f"{args.out}combined.fasta"
+        if args.query_fasta: # this resume check doesnt work for prot_genome_pairs and maybe chop-genomes mode. Adjust soon, tired now
+            mmseqs_grp_db,mmseqs_search = n.read_search_tsv(input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
+        
     if (args.resume and not os.path.isfile(file_to_check)) or (not args.resume):
         if args.query_fasta:
             if args.prot_genome_pairs:
@@ -52,8 +55,16 @@ def pull_neighborhoodsdf(args,tmpd,logger):
                 mmseqs_grp_db,mmseqs_search = n.read_search_tsv(input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
                 logger.info(f"Number of query proteins found in genomes: {len(set(mmseqs_search['query']))}")
             neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, mmseqs_groups = mmseqs_grp_db,head_on=args.head_on,intergenic_cutoff=args.intergenic) # might want to fix the potential issue of neighborhoods getting removed if they don't meet minimum criteria
+            logger.debug("Saving protiens found in neighborhoods..")
+            neighborhood_db = neighborhood_db.flatten()
+            n.run_fasta_from_neighborhood(logger,args,dir_for_fasta=args.genomes,neighborhood=neighborhood_db,
+                                            out_folder=args.out,threads=args.threads) # need to call this function in a smarter way. Basically I'm opening and closing a new fasta for neighborhood, which is probably a major slow down.
+            # maybe instead of the above two lines I can...
+            # 1) pd.concat the neighborhood dataframes in neighborhooddb
+            # 2) groupby gff name then send the groups to a list, then convert to dask bag
+            # 3) Apply the run_fasta_from_neighborhood() function to each group (would require me to modify run_fasta_from_neighborhood()
 
-        elif args.genome_tsv:
+        elif args.genomes or args.genome_tsv:
             logger.debug("Chopping up some genomes...")
             if args.genome_tsv: # use if user provides a tsv with paths to genome and protein files, columns must be genome_name, protein path, and gff path
                 args.genome_tsv = pd.read_csv(args.genome_tsv,sep="\t",names=['genome','protein','gff'])
@@ -79,28 +90,28 @@ def pull_neighborhoodsdf(args,tmpd,logger):
                 genome_queries = [genome.split('/')[-1].split('.gff')[0] for genome in glob.glob(args.genomes + '*.gff')]
                 genome_query_db = db.from_sequence(genome_queries,npartitions=args.threads)
                 neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, genome_query = genome_query_db,head_on=args.head_on,intergenic_cutoff=args.intergenic)
-
-        logger.debug("Saving protiens found in neighborhoods..")
-        neighborhood_db = neighborhood_db.flatten()
-        n.run_fasta_from_neighborhood(logger,args,dir_for_fasta=args.genomes,neighborhood=neighborhood_db,
-                                        out_folder=args.out,threads=args.threads) # need to call this function in a smarter way. Basically I'm opening and closing a new fasta for neighborhood, which is probably a major slow down.
-        # maybe instead of the above two lines I can...
-        # 1) pd.concat the neighborhood dataframes in neighborhooddb
-        # 2) groupby gff name then send the groups to a list, then convert to dask bag
-        # 3) Apply the run_fasta_from_neighborhood() function to each group (would require me to modify run_fasta_from_neighborhood()
+                
+            neighborhood_db = neighborhood_db.flatten().compute()
+            neighborhood_db = pd.concat(neighborhood_db)            
+            neighborhood_db.rename(columns={'protein_id':'locus_tag'},inplace=True)
+        else:
+            raise Exception("Inputs arguments must include --genomes and --query_fasta, or --genome_tsv, or --prot_genome_pairs")
     
     if args.cluster: # need the mmseqs_search object from a query fasta from this work
         logger.debug("Clustering proteins found in all neighborhoods...")
         mm.mmseqs_cluster(args)
         singular_combinedfasta = f"{args.out}combined_fastas_clust_rep.fasta" # to match inputs into glm_input_frm_neighbors.py
-        mmseqs_clust = pn.prep_cluster_tsv(f"{args.out}combined_fastas_clust_res.tsv",logger)
-        if args.query_fasta:
-            mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search,vfdb=None,removed_neighborhoods=None,logger=logger) # need to fix removed_neighborhoods later
-            mmseqs_clust = mmseqs_clust.compute()
+        mmseqs_clust = f"{args.out}combined_fastas_clust_res.tsv"
         
     else:
         # grab all the proteins found from all neighborhoods, to then send to a dataframe with neighborhood id info
-        combinedfastas = glob.glob(f"{args.out}combined_fasta_partition*")
+        if isinstance(args.genome_tsv,pd.DataFrame):
+            combinedfastas = list(args.genome_tsv['protein'])
+            genome_query=True
+        else:
+            combinedfastas = glob.glob(f"{args.out}combined_fasta_partition*")
+            genome_query=False
+        
         singular_combinedfasta = f"{args.out}combined.fasta"
         with open(singular_combinedfasta,"w") as outfile:
             for fasta in combinedfastas:
@@ -112,23 +123,33 @@ def pull_neighborhoodsdf(args,tmpd,logger):
         # simulate an mmseqs clustering df output without actually clustering proteins, so that written functions work
         mmseqs_clust = pd.DataFrame([allids,allids]).T
         mmseqs_clust.columns = ['rep','locus_tag'] 
-        mmseqs_clust = pn.prep_cluster_tsv(mmseqs_clust,logger)
-        # b/c we didnt do an initial search all VF centers are the queries for glm input purposes. This will end up creating a lot of glm_inputs
+    
+    # b/c we didnt do an initial search all VF centers are the queries for glm input purposes. This will end up creating a lot of glm_inputs
     if args.query_fasta:
-        mmseqs_clust['query'] = mmseqs_clust['VF_center'].copy()
+        mmseqs_clust = pn.prep_cluster_tsv(mmseqs_clust,logger)
+        mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search,vfdb=None,removed_neighborhoods=None,logger=logger) # need to fix removed_neighborhoods later
+        mmseqs_clust = mmseqs_clust.compute()
+        # mmseqs_clust['query'] = mmseqs_clust['VF_center'].copy()
     else:
-        mmseqs_clust['query'] = mmseqs_clust['gff'].copy() 
+        mmseqs_clust = pn.prep_cluster_tsv(mmseqs_clust,logger,genome_query=genome_query)
+        mmseqs_clust = pd.merge(mmseqs_clust,neighborhood_db[['locus_tag','start','strand','neighborhood_name']],on='locus_tag',how='right')
+        mmseqs_clust['locus_tag'] = mmseqs_clust['locus_tag'] + '!!!' + mmseqs_clust['neighborhood_name']
+        mmseqs_clust['query'] = mmseqs_clust['neighborhood_name'].str.split('!!!').str[1]
     
     nn_hash = None
     if args.memory_optimize:
         logger.debug("Save then remove duplicate neighborhoods. Map neighborhoods back via embeddings")
         logger.debug(f"Total number of neighborhoods pre-hash: {len(set(mmseqs_clust['neighborhood_name']))}")
         
-        mmseqs_clust, nn_hash = pn.hash_neighborhoods(mmseqs_clust)
+        mmseqs_clust, nn_hash = pn.hash_neighborhoods(mmseqs_clust,args)
         pkl.dump(nn_hash,open(f'{args.out}nnhash_mapping.obj','wb'))
 
     logger.debug(f"Total number of neighborhoods post-hash: {len(set(mmseqs_clust['neighborhood_name']))}")
-    subprocess.run(f"mkdir {args.out}clust_res_in_neighborhoods",shell=True,check=True)
+    try: # incase resume was called
+        subprocess.run(f"mkdir {args.out}clust_res_in_neighborhoods",shell=True,check=True) 
+    except:
+        subprocess.run(f"rm -r {args.out}clust_res_in_neighborhoods",shell=True,check=True)
+        subprocess.run(f"mkdir {args.out}clust_res_in_neighborhoods",shell=True,check=True)
     mmseqs_clust.to_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust.tsv",sep="\t",index=False)
 
     return mmseqs_clust, singular_combinedfasta, nn_hash

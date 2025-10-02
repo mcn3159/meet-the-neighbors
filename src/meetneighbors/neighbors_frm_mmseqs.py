@@ -77,6 +77,7 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
         gff, protein = get_gff_prot_filenames(mmseqs_group[1].tset.iloc[0].split('protein.fa')[0],args)
         gff_df = pg.gff2pandas(gff)
         protein_ids = list(mmseqs_group[1].target)
+        gff_prefix = gff.split('/')[-1].split('_genomic.gff')[0].split('.gff')[0]
     
     if genome_query:
         if isinstance(args.genome_tsv,pd.DataFrame):
@@ -91,22 +92,27 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
         if 'protein_id' not in gff_df.columns: # gffs made with phannotate don't output a protein_id field,
             gff_df['protein_id'] = gff_df['locus_tag'].copy()
         gff_df['protein_id'] = gff_df['protein_id'].str.split(':').str[-1] # remove weird characters in protein id
+        gff_df['protein_id'] = gff_df['protein_id'].str.split('|').str[-1]
         
         gff_df = gff_df[['protein_id','strand','seq_id','start','end']]
         # get list of protein ids to then use on gff,subset protein id to match what's in gff_df
         protein_ids = set([rec.id.split('|')[-1] for rec in pg.SeqIO.parse(protein_file,"fasta")]) 
 
+    assert ('.fasta' not in gff_prefix) or ('.fa' not in gff_prefix), f"The Gff file: {gff_prefix} contains a .fa or .fasta. Suggest to remove the substring from the filename."
+
     # subset gff for protein centers that we're interested in
-    logger.warning(f"Before size of gffdf: {gff_df.shape}")
+    # logger.warning(f"Before size of gffdf: {gff_df.shape}")
     vf_centers = gff_df[gff_df['protein_id'].isin(protein_ids)]
     # if no vf centers are found in the gffdf try adjusting the protid names
     if len(vf_centers) == 0:
         gff_df['protein_id'] = gff_df['protein_id'].str.split(':').str[-1]
         vf_centers = gff_df[gff_df['protein_id'].isin(protein_ids)]
     
-    assert vf_centers.shape[0] > 0, f"Protein IDs in gff and protein fasta for genome: {genome_query} do not match." #!!! to add
+    if vf_centers.shape[0] == 0:
+        logger.warning(f"Protein IDs in gff and protein fasta for genome: {gff_prefix} do not match. Skipping this genome") #!!! to add
+        return []
 
-    logger.warning(f"After size of gffdf: {vf_centers.shape}")
+    # logger.warning(f"After size of gffdf: {vf_centers.shape}")
 
     window = args.neighborhood_size/2
     neighborhoods = []
@@ -129,7 +135,7 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
 
         neighborhood_df['VF_center'] = row.protein_id
         neighborhood_df['gff_name'] =  gff_prefix # for compatibility with chop_genomes
-        neighborhood_df['locus_range'] =  f"{min(neighborhood_df['start']) }-{max(neighborhood_df['end'])}" 
+        neighborhood_df['locus_range'] =  f"{min(neighborhood_df['start'])}-{max(neighborhood_df['end'])}" 
         neighborhood_df.dropna(subset='protein_id',inplace=True)
 
         if args.intergenic: # maybe I can significantly speed this up by substracting the start positions from the previous proteins end position, if over intergenic distance, remove
@@ -176,7 +182,11 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
 
         if genome_query:
             # below 2 lines are here for memory saving purposes. If I save then later concat the whole df, it will take up a lot of mem
-            neighborhood_df['neighborhood_name'] = neighborhood_df['VF_center'] + '!!!' + neighborhood_df['gff_name'] + '!!!' + neighborhood_df['seq_id'] + '!!!' + neighborhood_df['locus_range']
+            try:
+                neighborhood_df['neighborhood_name'] = neighborhood_df['VF_center'] + '!!!' + neighborhood_df['gff_name'] + '!!!' + neighborhood_df['seq_id'] + '!!!' + neighborhood_df['locus_range']
+            except TypeError:
+                neighborhood_df['neighborhood_name'] = neighborhood_df['VF_center'] + '!!!' + neighborhood_df['gff_name'] + '!!!' + neighborhood_df['seq_id'].astype(str) + '!!!' + neighborhood_df['locus_range']
+
             neighborhood_df = neighborhood_df[['protein_id','start','strand','neighborhood_name']]
         neighborhoods.append(neighborhood_df)
     

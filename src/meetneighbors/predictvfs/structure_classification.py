@@ -11,11 +11,6 @@ import time
 import tqdm # type: ignore
 import importlib.resources
 
-
-# def aa2foldseek(args,path_to_spacedust):
-#     subprocess.run(f"{path_to_spacedust} aa2foldseek  {args.out}/mmseqsb {args.targetdb} -v 2 --alignment-output-mode 3 --cov-mode 0 -c 0.90 --min-seq-id 0.90 --split-memory-limit {int(args.mem * (2/3))}G tmpFolder --tsv --threads {args.threads}")
-#     return 
-
 def foldseek_search(args):
     # search query's foldseek db against targetdb
     
