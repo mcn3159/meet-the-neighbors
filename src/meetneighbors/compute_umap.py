@@ -20,23 +20,32 @@ def unpack_embeddings(glm_out_dir,glm_in_dir,mmseqs_clust, **kwargs): # lowkey d
 
     glm_res_d_vals_predf = {}
     # below column names are used for virulent mode, 
-    input_tsv_cols = ['neighborhood_name','neighborhood','vf_center_index','vf_name','vfid','vf_subcategory','vf_category','species','genus']
+    input_tsv_cols = ['neighborhood_name','neighborhood','vf_center_index']
 
     # def get_hashed_embeddings(hash,nn_hash_d,glm_batch,input_tsv): #for hashed nns
 
     def get_hashedout_embeds(nn_hash_df,mmseqs_clust,glm_batch,input_tsv,glm_res_d_vals_predf):
         input_tsv['neighborhood'] = input_tsv['neighborhood'].str.split(';')
-        input_tsv = input_tsv.explode('neighborhood').reset_index(drop=True).reset_index(names='rep_index')
+        input_tsv = input_tsv.explode('neighborhood').reset_index(drop=True).reset_index(names='rep_index') # now rep_index numbers should line up with what's in glm_batch
         input_tsv['neighborhood'] = input_tsv['neighborhood'].str[1:]
 
         mmseqs_clust = mmseqs_clust.loc[mmseqs_clust['prot_gffname'] == (mmseqs_clust['VF_center'] +'!!!'+ mmseqs_clust['gff'])] # subset mmseqs_clust for rows with VF centers
 
         input_tsv = input_tsv[input_tsv['neighborhood'].isin(set(mmseqs_clust['rep']))] # now its only VF centers in glm_inputs
-        input_tsv = pd.merge(input_tsv,mmseqs_clust[['neighborhood_name','nn_hashes']],on='neighborhood_name') 
-        nn_hash_df = pd.merge(nn_hash_df,input_tsv[['neighborhood','rep_index','nn_hashes']],on='nn_hashes')
+        input_tsv = pd.merge(input_tsv,mmseqs_clust[['neighborhood_name','nn_hashes']],on='neighborhood_name',how='left') 
+        nn_hash_df = nn_hash_df[nn_hash_df['nn_hashes'].isin(set(input_tsv['nn_hashes']))] # need to subset since not all hashes are in one chunk of glm_inputs
+        nn_hash_df = pd.merge(nn_hash_df,input_tsv[['neighborhood','rep_index','nn_hashes']],on='nn_hashes',how='left')
 
         for i,row in enumerate(nn_hash_df.itertuples()):
-            glm_res_d_vals_predf[row.query + '!!!' + str(i)] = np.append(glm_batch[row.rep_index][1], row.neighborhood_name)
+            try:
+                glm_res_d_vals_predf[row.query + '!!!' + str(i)] = np.append(glm_batch[row.rep_index][1], row.neighborhood_name)
+            except Exception as e:
+                print(e)
+                print(row)
+                input_tsv.to_csv('glm_inputdf.tsv',sep="\t",index=False)
+                nn_hash_df.to_csv('nn_hashdf.tsv',sep="\t",index=False)
+                mmseqs_clust.to_csv('mmseqs_clust_sub.tsv',sep="\t",index=False)
+                raise Exception
         return glm_res_d_vals_predf
     # maybe make a df with columns: rep,nn from input_tsv, index: 0-n_reps, index_matches those in glm_outputs
     # map df indices to reps in mmseqs_clust_sub
