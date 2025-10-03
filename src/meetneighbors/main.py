@@ -66,7 +66,10 @@ def get_parser():
     extract_neighbors.add_argument("--glm_cluster",type=str,default="complete",required=False,help="Sklearn agglomerative clustering linkage method to link similar neighborhoods")
     extract_neighbors.add_argument("--plot","-p",action="store_true", required=False, default=None, help="Plot data")
     extract_neighbors.add_argument("--plt_from_saved","-pfs",type=str, required=False, default=None, help="Plot from a saved neighborhood tsv")
-    # extract_neighbors.add_argument("--gpu",required=False,type=int,help="Utilize N gpus")
+    extract_neighbors.add_argument("--gpu", type=int,default=0, help="Number of gpus to use for embedding making") # this and the next two args should prolly be shared across all modes
+    extract_neighbors.add_argument("--memory_optimize",action="store_true",required=False,help="Optimize mmseqs clust df for memory efficiency")
+    extract_neighbors.add_argument("--cluster", action="store_true", help="Temporaily remove redundant neighborhood to increase speed by clustering all proteins found")
+    extract_neighbors.add_argument("--glm_bs",type=int,default=100,required=False,help="Batch size for computing gLM embeddings")
 
     comp_neighbors = subparsers.add_parser("compare_neighborhoods",parents=[parent_parser],help="Compare multiple neighborhood tsvs")
     comp_neighbors.add_argument('--neighborhood1','-n1',type=str,required=True,help="Give full path to 1st neighborhood to compare")
@@ -311,7 +314,7 @@ def workflow(parser):
                 
                 if args.query_fasta or args.prot_genome_pairs: # for only query_fasta and prot_genome_pairs here b/c predicting from genomes already runs pretty fast
                         shutil.rmtree(args.out + glm_input_out) # remove originial glm_inputs dir to save file space
-                        shutil.move(glm_input2_out, args.out + glm_input_out)
+                        shutil.move(args.out + glm_input2_out, args.out + glm_input_out)
                     
             
                 try:
