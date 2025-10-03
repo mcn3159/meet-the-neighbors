@@ -169,13 +169,13 @@ def infer(logging, data_dir, model,output_path, device, id_dict, B_SIZE):
 # if args.model_path is None :
 #     parser.error('--model must be specified')
 
-def run_glm_embeds(model,pkg_data_dir,glm_embed_output_path,device,ngpus):
+def run_glm_embeds(model,pkg_data_dir,glm_embed_output_path,device,ngpus,batch_size):
     # define all parameters
     data_dir = pkg_data_dir
     # model_path = args.model_path
     output_path = glm_embed_output_path
     # id_path = protidpkl_path
-    B_SIZE = 100 # batch size
+    B_SIZE = batch_size # batch size
 
 
     # make output folder if not specified
@@ -203,7 +203,7 @@ def run_glm_embeds(model,pkg_data_dir,glm_embed_output_path,device,ngpus):
     logging.info("command: " + string_of_command)
 
     model.eval()
-    ngpus=1
+    # ngpus=1 # I think it might be faster using torch parallel
     if ngpus>1:
         model = torch.nn.DataParallel(model)
     model.to(device)

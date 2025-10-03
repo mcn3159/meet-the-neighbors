@@ -12,7 +12,8 @@ import numpy as np
 from scipy.stats import entropy
 import dask.dataframe as dd
 
-def prep_cluster_tsv(mmseqs_res_dir,logger):
+def prep_cluster_tsv(mmseqs_res_dir,logger,**kwargs):
+    genome_query = kwargs.get('genome_query',None)
 
     #run for mmseqs clustered results
     #example res: '/Users/mn3159/bigpurple/data/pirontilab/Students/Madu/bigdreams_dl/neighborhood_call/neighbors_rand5k/neighbors_rand5k_clust_res.tsv'
@@ -23,29 +24,43 @@ def prep_cluster_tsv(mmseqs_res_dir,logger):
     else:
         mmseqs = mmseqs_res_dir.copy() 
     
+    if not genome_query: # genome based query mode like chop-genome may be using the raw protein ids.
+        mmseqs['VF_center'],mmseqs['gff'],mmseqs['seq_id'],mmseqs['locus_range'],mmseqs['start'], mmseqs['strand'] = mmseqs['locus_tag'].str.split('!!!').str[1],\
+                                                                                mmseqs['locus_tag'].str.split('!!!').str[2],\
+                                                                                mmseqs['locus_tag'].str.split('!!!').str[3],\
+                                                                                mmseqs['locus_tag'].str.split('!!!').str[4],\
+                                                                                mmseqs['locus_tag'].str.split('!!!').str[5],\
+                                                                                mmseqs['locus_tag'].str.split('!!!').str[6]
+        mmseqs['neighborhood_name'] = mmseqs['VF_center'] + '!!!' + mmseqs['gff'] + '!!!' + mmseqs['seq_id'] + '!!!' + mmseqs['locus_range'] #VF_center in non_vf calls are simply just the query hits
+        mmseqs['prot_gffname'] = mmseqs['locus_tag'].str.split('!!!').str[0] + '!!!' + mmseqs['gff']
 
-    mmseqs['VF_center'],mmseqs['gff'],mmseqs['seq_id'],mmseqs['locus_range'],mmseqs['start'], mmseqs['strand'] = mmseqs['locus_tag'].str.split('!!!').str[1],\
-                                                                               mmseqs['locus_tag'].str.split('!!!').str[2],\
-                                                                               mmseqs['locus_tag'].str.split('!!!').str[3],\
-                                                                               mmseqs['locus_tag'].str.split('!!!').str[4],\
-                                                                               mmseqs['locus_tag'].str.split('!!!').str[5],\
-                                                                               mmseqs['locus_tag'].str.split('!!!').str[6]
-    mmseqs['neighborhood_name'] = mmseqs['VF_center'] + '!!!' + mmseqs['gff'] + '!!!' + mmseqs['seq_id'] + '!!!' + mmseqs['locus_range'] #VF_center in non_vf calls are simply just the query hits
-    
-    if isinstance(mmseqs_res_dir,str):
-        mmseqs = mmseqs.compute()
+    elif genome_query: # sometimes the protein ids in the gff and protein fasta slightly don't match. Setting this rule that only takes ID after the |. 
+        mmseqs['locus_tag'] = mmseqs['locus_tag'].str.split('|').str[-1]
+        mmseqs['rep'] = mmseqs['rep'].str.split('|').str[-1]
+
+    try:
+        if isinstance(mmseqs_res_dir,str):
+            mmseqs = mmseqs.compute()
+    except:
+        logger.debug("Ran into OOM from calling .compute() on mmseqs cluster results. Chunking instead")
+        n_partitions = mmseqs.npartitions
+        # Process each partition separately
+        mmseqs_chunks = [mmseqs.get_partition(i).compute() for i in range(n_partitions)]
+        # Combine results
+        mmseqs = pd.concat(mmseqs_chunks, ignore_index=True)
+        del mmseqs_chunks
+
     cluster_names = {rep:f"Cluster_{i}" for i,rep in enumerate(set(list(mmseqs.rep)))} #can't list and loop mmseqs col with dask, so I have to compute first
-    mmseqs['cluster'] = mmseqs['rep'].map(cluster_names)
-    mmseqs['prot_gffname'] = mmseqs['locus_tag'].str.split('!!!').str[0] + '!!!' + mmseqs['gff']
-
+    mmseqs['cluster'] = mmseqs['rep'].map(cluster_names.get)
     logger.debug(f"Size of mmseqs cluster results: {mmseqs.shape}")
     return mmseqs
 
 def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb,removed_neighborhoods,logger):
     # map query search hits to each target neighborhood in the cluster df
     # what if the same protein fasta has multiple proteins with the same name
+    # why do I merge by prot_gffname instead of just the prot name? I think there's a good reason, but I can't remember and didnt take good enough nnotes
     
-    mmseqs_search['gff_name'] = mmseqs_search.tset.str.split('_protein.faa').str[0]
+    mmseqs_search['gff_name'] = mmseqs_search.tset.str.split('_protein.faa').str[0].str.split('.faa').str[0].str.split('.fasta').str[0] # rough but should be pretty robust?
     mmseqs_search['prot_gffname'] = mmseqs_search['target'] + '!!!' + mmseqs_search['gff_name']
 
     # check how many query had all their neighborhoods removed b/c the minimum neighborhood conditions were not met
@@ -103,7 +118,7 @@ def select_multivf_neighborhoods(mmseqs_clust,loose_vf_search,logger):
     lc_query_map = dict(zip(loose_vf_search['target'],loose_vf_search['query'])) # this dictionary will be used to map additional locus tags (target) that had some sort of seq similarity to a vf (query)
 
     og_hits.update(lc_query_map) # combine new locus tag hits to a VF with the originals
-    mmseqs_clust['loose_query'] = mmseqs_clust['locus_tag'].map(og_hits) # new column gives an idea of what neighborhoods have multiple VFs mapped to it
+    mmseqs_clust['loose_query'] = mmseqs_clust['locus_tag'].map(og_hits.get) # new column gives an idea of what neighborhoods have multiple VFs mapped to it
 
     print(mmseqs_clust.dropna(subset=['loose_query']).shape)
     print(mmseqs_clust.dropna(subset=['loose_query']).head())
@@ -123,9 +138,35 @@ def get_query_neighborhood_groups(mmseqs_clust,cluster_neighborhoods_by):
     nname_query = mmseqs_clust_sub.groupby('neighborhood_name')[cluster_neighborhoods_by].apply(list).to_dict()
     nname_query = {n:query for n in nname_query for query in nname_query[n] if '!!!'.join(n.split('!!!')[:2]) in query_prot[query]}
     mmseqs_clust_nolink_targ_query = mmseqs_clust.copy()
-    mmseqs_clust_nolink_targ_query[cluster_neighborhoods_by] = mmseqs_clust.neighborhood_name.map(nname_query) # no link between target and alot of the query col values
+    mmseqs_clust_nolink_targ_query[cluster_neighborhoods_by] = mmseqs_clust.neighborhood_name.map(nname_query.get) # no link between target and alot of the query col values
     mmseqs_clust_nolink_groups = mmseqs_clust_nolink_targ_query.groupby(cluster_neighborhoods_by,dropna=True) # did this line and the above so that the below dict comp runs faster hopefully
     return mmseqs_clust_nolink_groups
+
+def hash_neighborhoods(mmseqs_clust,args):
+    # create a hash for neighborhood names with the same content and order for deduplication.
+    # not dask maping this function b/c I need to make and keep the dictionary output. And idk how dask map behaves w/ hashing 
+    # use nn_hash dictionary to map back embeddings with an nn. Should run this after a reduce overlap
+    mmseqs_clust_grps = mmseqs_clust.groupby('neighborhood_name')[['rep','start']]
+
+    nn_hash = {nn: hash(tuple(grp.sort_values(by='start').drop_duplicates(subset='start')['rep'])) 
+               for nn,grp in mmseqs_clust_grps}
+
+    mmseqs_clust['nn_hashes'] = mmseqs_clust['neighborhood_name'].map(nn_hash.get)
+
+    # We want one hash per neighborhood, and then later map the neighborhood and it's respective query back to the final results.
+    # Need to make sure that the query matches the nn VF_center for this to work correctly. 
+    nn_hash = mmseqs_clust.loc[mmseqs_clust['prot_gffname'] == (mmseqs_clust['VF_center'] +'!!!'+ mmseqs_clust['gff'])].groupby('nn_hashes')[['query','neighborhood_name']].apply(lambda x: x.values.tolist()).to_dict()
+    nn_per_hash = mmseqs_clust.groupby('nn_hashes',group_keys=False)['neighborhood_name'].apply(lambda x: x.sample(1))
+    mmseqs_clust = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(nn_per_hash)]
+
+    if not args.query_fasta:
+        mmseqs_clust['VF_center'],mmseqs_clust['gff'],mmseqs_clust['seq_id'],mmseqs_clust['locus_range'] = mmseqs_clust['neighborhood_name'].str.split('!!!').str[0],\
+                                                                            mmseqs_clust['neighborhood_name'].str.split('!!!').str[1],\
+                                                                            mmseqs_clust['neighborhood_name'].str.split('!!!').str[2],\
+                                                                            mmseqs_clust['neighborhood_name'].str.split('!!!').str[3]
+        mmseqs_clust['prot_gffname'] = mmseqs_clust['locus_tag'].str.split('!!!').str[0] + '!!!' + mmseqs_clust['gff']
+
+    return mmseqs_clust, nn_hash
 
 class VF_neighborhoods:
     def __init__(self,logger,mmseqs_clust,query,dbscan_eps,dbscan_min):
@@ -178,9 +219,9 @@ class VF_neighborhoods:
         return list(cdhit_sub_piv_sub.index) # indicies are neighborhood names
 
     def to_dict(self):
+        self.entropy = self.neighborhood_freqs() # want to calculate the entropy BEFORE create_dist_matrix() b/c that's where duplicates are removed
         self.dist_matrix, self.unique_hits = self.create_dist_matrix()
         self.clusters, self.noise = self.calc_clusters()
-        self.entropy = self.neighborhood_freqs()
         return {
             "query" : self.query_prot,
             "total_hits" : self.total_hits,

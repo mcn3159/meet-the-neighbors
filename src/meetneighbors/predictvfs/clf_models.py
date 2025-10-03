@@ -11,9 +11,9 @@ class FullyConnectedNN(nn.Module):
         super(FullyConnectedNN, self).__init__()
         self.fc1 = nn.Linear(input_dim, 384)
         self.dropout1 = nn.Dropout(0.6)
-        self.fc2 = nn.Linear(384, 32)
-        self.dropout2 = nn.Dropout(0.2)
-        self.fc3 = nn.Linear(32, num_classes)
+        self.fc2 = nn.Linear(384, 384)
+        self.dropout2 = nn.Dropout(0.6)
+        self.fc3 = nn.Linear(384, num_classes)
         
     def forward(self, x):
         x = torch.relu(self.fc1(x))
@@ -26,13 +26,14 @@ class FullyConnectedNN(nn.Module):
 # load the meta classifier
 def meta_classifier(nn_struct_preds,model,lb):
     model = pkl.load(model.open('rb'))
-    first_feature_ind = 3
+    first_feature_ind,num_features = 2,13
     meta_preds = model.predict_proba(nn_struct_preds.rename(columns=
-                                    {col:str(i)+'_x' if '_x' in col else str(i-8)+'_y' 
+                                    {col:str(i)+'_x' if '_x' in col else str(i-num_features)+'_y' 
                                         for i,col in enumerate(nn_struct_preds.iloc[:,first_feature_ind:].columns)}).iloc[:,first_feature_ind:])
                         
                         
     meta_preds = pd.DataFrame(meta_preds)
     meta_preds.columns = [cat for cat in lb.classes_]
-    meta_preds = pd.concat([nn_struct_preds[['query','neighborhood_name','seq_annotations']],meta_preds],axis=1)
+    # meta_preds = pd.concat([nn_struct_preds[['query','neighborhood_name','seq_annotations']],meta_preds],axis=1)
+    meta_preds = pd.concat([nn_struct_preds[['query','neighborhood_name']],meta_preds],axis=1)
     return meta_preds

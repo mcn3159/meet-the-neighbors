@@ -1,6 +1,7 @@
 import pandas as pd
 import argparse
 import re
+import glob
 import dask
 dask.config.set(scheduler='processes')
 import dask.bag as db
@@ -49,31 +50,68 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
     # condition: If the same protein appears twice in a genome, but has different neighborhoods? They should have the same query
 
     mmseqs_group = kwargs.get("mmseqs_groups",None)
+    # genome_paths_df = kwargs.get("genome_paths",None)
     genome_query = kwargs.get("genome_query",None)
     args.head_on = kwargs.get("head_on",None) # to be compatible with chop genome
+    args.intergenic = kwargs.get("intergenic_cutoff",None) # to be compatible with chop genome
+
+    def get_gff_prot_filenames(genome_query,args):
+        # gff = args.genomes + genome_query + 'genomic.gff'
+        gps = glob.glob(args.genomes + genome_query + '*') # if genome_query = GCFblabla_protein.fa* or genome_query = GCFblabla.gff 
+        if len(gps) == 1:
+            gps = glob.glob(args.genomes + genome_query.split('.fa')[0] + '*') # if genome_query = GCF.faa or genome_query = GCF.fasta, might fail if genome_query = GCF.fabas.gff
+        if len(gps) == 1:
+            genome_query = genome_query + '.gff' # add back the gff ending in case the files are called 'GCF_genomeBlaBlabla_genomic.gff
+            gps = glob.glob(args.genomes + genome_query.split('genomic.gff')[0] + '*')
+        elif len(gps) > 2: # if the genome directory has GCF.faa, GCF.fasta GCF.gbk and GCF.gff, only keep the .faa and .gff. May throw an error if user only has a .fasta and .gff
+            gps = [gen_file for gen_file in gps if '.faa' in gen_file or '.gff' in gen_file]
+        assert len(gps) == 2, f"Protein and gff file for {genome_query} could not be found. Make sure protein and gff pairs have the same file prefix, or ends with .faa and .gff respectively"
+        
+        if '.gff' in gps[0]:
+            gff,protein = gps[0],gps[1]
+        else:
+            gff,protein = gps[1],gps[0]
+        return gff, protein
 
     if mmseqs_group:  
-        gff = args.genomes + mmseqs_group[1].tset.iloc[0].split('protein.faa')[0] + 'genomic.gff'
+        gff, protein = get_gff_prot_filenames(mmseqs_group[1].tset.iloc[0].split('protein.fa')[0],args)
         gff_df = pg.gff2pandas(gff)
         protein_ids = list(mmseqs_group[1].target)
+        gff_prefix = gff.split('/')[-1].split('_genomic.gff')[0].split('.gff')[0]
     
     if genome_query:
-        gff = args.genomes + genome_query + '.gff'
+        if isinstance(args.genome_tsv,pd.DataFrame):
+            genome_path_row = args.genome_tsv[args.genome_tsv['genome']==genome_query].iloc[0]
+            gff,protein_file = genome_path_row['gff'], genome_path_row['protein']
+            gff_prefix = genome_query
+        else:
+            gff, protein_file = get_gff_prot_filenames(genome_query,args)
+            gff_prefix = gff.split('/')[-1].split('_genomic.gff')[0].split('.gff')[0]
+        # gff = args.genomes + genome_query + 'genomic.gff'
         gff_df = pg.gff2pandas(gff)
+        if 'protein_id' not in gff_df.columns: # gffs made with phannotate don't output a protein_id field,
+            gff_df['protein_id'] = gff_df['locus_tag'].copy()
         gff_df['protein_id'] = gff_df['protein_id'].str.split(':').str[-1] # remove weird characters in protein id
-
-        # check that we have a protein file with an appropriate suffix
-        protein_file = gff.split('.gff')[0] + ".faa"
-        if not os.path.isfile(protein_file):
-            protein_file = gff.split('.gff')[0] + "fasta"
-            assert os.path.isfile(protein_file), f"Protein file for {genome_query} with .faa or .fasta suffix not found"
-
+        gff_df['protein_id'] = gff_df['protein_id'].str.split('|').str[-1]
+        
+        gff_df = gff_df[['protein_id','strand','seq_id','start','end']]
         # get list of protein ids to then use on gff,subset protein id to match what's in gff_df
         protein_ids = set([rec.id.split('|')[-1] for rec in pg.SeqIO.parse(protein_file,"fasta")]) 
+
+    assert ('.fasta' not in gff_prefix) or ('.fa' not in gff_prefix), f"The Gff file: {gff_prefix} contains a .fa or .fasta. Suggest to remove the substring from the filename."
 
     # subset gff for protein centers that we're interested in
     # logger.warning(f"Before size of gffdf: {gff_df.shape}")
     vf_centers = gff_df[gff_df['protein_id'].isin(protein_ids)]
+    # if no vf centers are found in the gffdf try adjusting the protid names
+    if len(vf_centers) == 0:
+        gff_df['protein_id'] = gff_df['protein_id'].str.split(':').str[-1]
+        vf_centers = gff_df[gff_df['protein_id'].isin(protein_ids)]
+    
+    if vf_centers.shape[0] == 0:
+        logger.warning(f"Protein IDs in gff and protein fasta for genome: {gff_prefix} do not match. Skipping this genome") #!!! to add
+        return []
+
     # logger.warning(f"After size of gffdf: {vf_centers.shape}")
 
     window = args.neighborhood_size/2
@@ -84,38 +122,50 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
     for row in vf_centers.itertuples(): # this adds a new neighborhood (neighborhood_df) to a list (neighborhoods)
 
         # subset the genome (gff_df) for genes on the same contig and/or strand
-        if args.head_on:
-            gff_df_strand = gff_df[gff_df['seq_id'] == row.seq_id]
-        else:
-            gff_df_strand = gff_df[(gff_df['strand'] == row.strand) & (gff_df['seq_id'] == row.seq_id)]
-        neighborhood_df = gff_df_strand.copy()
-
         # further subset the genome (now neighborhood_df) for genes within the predefined neighborhood limits default +/- 20kb
-        neighborhood_df = neighborhood_df[
-            (neighborhood_df['start'] >= row.start - window) &
-            (neighborhood_df['end'] <= row.end + window)]
-        neighborhood_df['VF_center'] = row.protein_id
-        neighborhood_df['gff_name'] = gff.split('/')[-1].split('_genomic.gff')[0].split('.gff')[0] # for compatibility with chop_genomes
+        if not args.head_on:
+            strand_mask = gff_df['strand'].values == row.strand
+        seq_id_mask = gff_df['seq_id'].values == row.seq_id
+        start_mask = gff_df['start'].values >= row.start - window
+        end_mask = gff_df['end'].values <= row.end + window
 
-        if args.intergenic:
-            if neighborhood_df.shape[0] < 2:
+        # # Combine all masks
+        final_mask = strand_mask & seq_id_mask & start_mask & end_mask
+        neighborhood_df = gff_df[final_mask].copy()
+
+        neighborhood_df['VF_center'] = row.protein_id
+        neighborhood_df['gff_name'] =  gff_prefix # for compatibility with chop_genomes
+        neighborhood_df['locus_range'] =  f"{min(neighborhood_df['start'])}-{max(neighborhood_df['end'])}" 
+        neighborhood_df.dropna(subset='protein_id',inplace=True)
+
+        if args.intergenic: # maybe I can significantly speed this up by substracting the start positions from the previous proteins end position, if over intergenic distance, remove
+            if neighborhood_df.shape[0] < 2: # skip if there's no proteins found in the neighborhood besides the center
                 continue
+            
+            # og_shape = neighborhood_df.shape
 
             clustering = AgglomerativeClustering(linkage='single', distance_threshold=args.intergenic, n_clusters= None).fit(
                 neighborhood_df[['start','end']].to_numpy())
             
-            # combine cluster labels w/ where each neighborhood start stop was found, indices are the same
-            neighborhood_df = pd.concat([neighborhood_df,
-                        pd.DataFrame(clustering.labels_,columns=['clu_label'],index=neighborhood_df.index)],
-                        axis=1)
-            
+            # # combine cluster labels w/ where each neighborhood start stop was found, indices are the same
+            # neighborhood_df = pd.concat([neighborhood_df,
+            #             pd.DataFrame(clustering.labels_,columns=['clu_label'],index=neighborhood_df.index)],
+            #             axis=1)
+
+            # Add cluster labels directly to the dataframe (more efficient than concat)
+            neighborhood_df['clu_label'] = clustering.labels_ # from claude
             # get the cluster label of the VF center
             clustr_labl_tokeep = neighborhood_df.loc[neighborhood_df['protein_id']==row.protein_id, 'clu_label'].iloc[0]
 
             # only keep genes that were within the distance cutoff specified
-            neighborhood_df[neighborhood_df['clu_label'] == clustr_labl_tokeep]
-            
+            neighborhood_df = neighborhood_df[neighborhood_df['clu_label'] == clustr_labl_tokeep]
 
+            # get an idea of the # of proteins removed from clustering
+            # num_prots_removed = og_shape[0] - neighborhood_df.shape[0] 
+            # if num_prots_removed > 0:
+            #     logger.warning(f"{num_prots_removed} proteins remove from neighborhood based of INTERGENIC distance...")
+            
+        # should make an argument that lets the user decide if they want a temp directory
         # remove neighborhoods that don't fit specified conditions
         if len(neighborhood_df) < args.min_prots: #neighborhood centers could be near a contig break causing really small neighborhoods, which isnt helpful info, remove these
             removed_neighborhoods.append(neighborhood_df['VF_center'].iloc[0] + '!!!' + neighborhood_df['gff_name'].iloc[0]) # save this info for debugging later
@@ -129,6 +179,15 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
                 logger.warning(f"Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are more than {args.max_prots} proteins")
                 report +=1
             continue
+
+        if genome_query:
+            # below 2 lines are here for memory saving purposes. If I save then later concat the whole df, it will take up a lot of mem
+            try:
+                neighborhood_df['neighborhood_name'] = neighborhood_df['VF_center'] + '!!!' + neighborhood_df['gff_name'] + '!!!' + neighborhood_df['seq_id'] + '!!!' + neighborhood_df['locus_range']
+            except TypeError:
+                neighborhood_df['neighborhood_name'] = neighborhood_df['VF_center'] + '!!!' + neighborhood_df['gff_name'] + '!!!' + neighborhood_df['seq_id'].astype(str) + '!!!' + neighborhood_df['locus_range']
+
+            neighborhood_df = neighborhood_df[['protein_id','start','strand','neighborhood_name']]
         neighborhoods.append(neighborhood_df)
     
     # save removed neighborhoods to a temporary text file for each partition, for analysis later
