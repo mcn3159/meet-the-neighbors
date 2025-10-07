@@ -236,7 +236,7 @@ def workflow(parser):
                     logger.debug('Assuming memory optimize was not called in the previous run..')
 
             glm_input_out,glm_input2_out,glm_ouputs_out = "glm_inputs","glm_input2_out/","glm_outputs" # slashes and non slashes done purposefuly
-            if (args.resume and not os.path.isfile(f'{args.out}glm_embeds.tsv')) or (not args.resume): # load back variables if resuming
+            if (args.resume and len(glob.glob(args.out+glm_ouputs_out+'/**/results/results/batch.pkl.glm.embs.pkl'))*2 != len(glob.glob(args.out+glm_input_out+'/*'))) or (not args.resume) or (len(glob.glob(args.out+glm_input_out+'/*'))==0):
                 cluster_neighborhoods_by = "query"
                 logger.debug("Creating groups of neighborhoods by their originial query")
                 mmseqs_clust_nolink_groups = pn.get_query_neighborhood_groups(mmseqs_clust,cluster_neighborhoods_by)
@@ -325,27 +325,30 @@ def workflow(parser):
                     shutil.rmtree(args.out + glm_ouputs_out) # switched to shutil and os here b/c subprocess wasn't finding directory to remove for whatever reason
                     os.mkdir(args.out + glm_ouputs_out)
 
-            logger.debug("Computing pLM embeddings...")
-            nc.get_plm_embeds(args.out+glm_input_out, args.out+glm_ouputs_out)
+                logger.debug("Computing pLM embeddings...")
+                nc.get_plm_embeds(args.out+glm_input_out, args.out+glm_ouputs_out)
 
-            tsvs_to_getembeds = glob.glob(args.out+glm_input_out+"/*.tsv")
-            computed_embed_names = [f.split('/')[-1] for f in glob.glob(args.out+glm_ouputs_out+"/*")] #only keep the query name from split for easier identification
-            # files = [file.split('.tsv')[0] for file in tsvs_to_getembeds if file.split('/')[-1].split('.tsv')[0] not in computed_embed_names] # make sure embed hasnt been computed already
-            logger.debug(f"Computing gLM embeddings...")
-            res_name = [nc.create_glm_embeds(
-                file.split('.tsv')[0],args.out+glm_ouputs_out,
-                norm_factors=pkl_objs['norm.pkl'],PCA_LABEL=pkl_objs['pca.pkl'],
-                ngpus=args.gpu,bs=args.glm_bs
-            ) for file in tsvs_to_getembeds if file.split('/')[-1].split('.tsv')[0] not in computed_embed_names] # i think using dask is causing the use of a ton of mem, and since prots are already chunked, this should be pretty fast
-
-            if args.memory_optimize:
-                glm_res_d_vals_predf = cu.unpack_embeddings(args.out+glm_ouputs_out,args.out+glm_input_out,mmseqs_clust,mem_optimize=nn_hash)
-            else:
-                glm_res_d_vals_predf =  cu.unpack_embeddings(args.out+glm_ouputs_out,args.out+glm_input_out,mmseqs_clust)
-            embedding_df_merge = cu.get_glm_embeddf(glm_res_d_vals_predf)
-            embedding_df_merge.to_csv(f"{args.out}glm_embeds.tsv",sep="\t",index=False)
+                tsvs_to_getembeds = glob.glob(args.out+glm_input_out+"/*.tsv")
+                computed_embed_names = [f.split('/')[-1] for f in glob.glob(args.out+glm_ouputs_out+"/*")] #only keep the query name from split for easier identification
+                # files = [file.split('.tsv')[0] for file in tsvs_to_getembeds if file.split('/')[-1].split('.tsv')[0] not in computed_embed_names] # make sure embed hasnt been computed already
+                logger.debug(f"Computing gLM embeddings...")
+                res_name = [nc.create_glm_embeds(
+                    file.split('.tsv')[0],args.out+glm_ouputs_out,
+                    norm_factors=pkl_objs['norm.pkl'],PCA_LABEL=pkl_objs['pca.pkl'],
+                    ngpus=args.gpu,bs=args.glm_bs
+                ) for file in tsvs_to_getembeds if file.split('/')[-1].split('.tsv')[0] not in computed_embed_names] # i think using dask is causing the use of a ton of mem, and since prots are already chunked, this should be pretty fast
+ 
+            if (args.resume and not os.path.isfile(f'{args.out}glm_embeds.tsv')) or (not args.resume): # load back variables if resuming
+                logger.debug("Organizing gLM embeddings into a pandas dataframe")
+                if args.memory_optimize:
+                    glm_res_d_vals_predf = cu.unpack_embeddings(args.out+glm_ouputs_out,args.out+glm_input_out,mmseqs_clust,logger=logger,mem_optimize=nn_hash)
+                    embedding_df_merge = cu.get_glm_embeddf(glm_res_d_vals_predf,mem_optimize=True)
+                else:
+                    glm_res_d_vals_predf =  cu.unpack_embeddings(args.out+glm_ouputs_out,args.out+glm_input_out,mmseqs_clust,logger)
+                    embedding_df_merge = cu.get_glm_embeddf(glm_res_d_vals_predf)
+                embedding_df_merge.to_csv(f"{args.out}glm_embeds.tsv",sep="\t",index=False)
         
-        if args.resume and  os.path.isfile(f"{args.out}glm_embeds.tsv"):
+        elif args.resume and  os.path.isfile(f"{args.out}glm_embeds.tsv"):
             mmseqs_clust = dd.read_csv(f'{args.out}clust_res_in_neighborhoods/mmseqs_clust.tsv',sep="\t",dtype={'query': 'object'}).compute()
             if args.cluster:
                 singular_combinedfasta = f"{args.out}combined_fastas_clust_rep.fasta" 
