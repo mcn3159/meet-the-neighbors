@@ -76,6 +76,7 @@ def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb,removed_
     else:
         mmseqs_clust = dd.merge(prepped_mmseqs_clust, mmseqs_search[['query','prot_gffname']],on='prot_gffname',how="left")
     logger.info(f"Size post search and cluster results merge: {mmseqs_clust.shape}")
+    assert len(set(mmseqs_clust.loc[mmseqs_clust['prot_gffname'] == (mmseqs_clust['VF_center'] +'!!!'+ mmseqs_clust['gff'])]['neighborhood_name'])) == len(set(mmseqs_clust['neighborhood_name'])), "Some hits from the mmseqs search did not merge, check genome names for an extra .faa/.fasta"
     return mmseqs_clust
 
 def reduce_overlap(mmseqs_clust_sub,window):
@@ -148,14 +149,14 @@ def hash_neighborhoods(mmseqs_clust,args):
     # use nn_hash dictionary to map back embeddings with an nn. Should run this after a reduce overlap
     mmseqs_clust_grps = mmseqs_clust.groupby('neighborhood_name')[['rep','start']]
 
-    nn_hash = {nn: hash(tuple(grp.sort_values(by='start').drop_duplicates(subset='start')['rep'])) 
+    nn_hash = {nn: hash(tuple(grp.sort_values(by='start').drop_duplicates(subset='start')['rep'])) # tested the grp.sort_values and drop_duplicates, and it looks like drop_dups doesnt change the row positioning!
                for nn,grp in mmseqs_clust_grps}
 
     mmseqs_clust['nn_hashes'] = mmseqs_clust['neighborhood_name'].map(nn_hash.get)
 
     # We want one hash per neighborhood, and then later map the neighborhood and it's respective query back to the final results.
     # Need to make sure that the query matches the nn VF_center for this to work correctly. 
-    nn_hash = mmseqs_clust.loc[mmseqs_clust['prot_gffname'] == (mmseqs_clust['VF_center'] +'!!!'+ mmseqs_clust['gff'])].groupby('nn_hashes')[['query','neighborhood_name']].apply(lambda x: x.values.tolist()).to_dict()
+    nn_hash = mmseqs_clust.loc[mmseqs_clust['prot_gffname'] == (mmseqs_clust['VF_center'] +'!!!'+ mmseqs_clust['gff'])].groupby('nn_hashes')[['query','rep','neighborhood_name']].apply(lambda x: x.values.tolist()).to_dict()
     nn_per_hash = mmseqs_clust.groupby('nn_hashes',group_keys=False)['neighborhood_name'].apply(lambda x: x.sample(1))
     mmseqs_clust = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(nn_per_hash)]
 
