@@ -70,6 +70,7 @@ def get_parser():
     extract_neighbors.add_argument("--memory_optimize",action="store_true",required=False,help="Optimize mmseqs clust df for memory efficiency")
     extract_neighbors.add_argument("--cluster", action="store_true", help="Temporaily remove redundant neighborhood to increase speed by clustering all proteins found")
     extract_neighbors.add_argument("--glm_bs",type=int,default=100,required=False,help="Batch size for computing gLM embeddings")
+    extract_neighbors.add_argument("--prot_genome_pairs",type=str,required=False,help="tsv of protein ids and their containing genome. Use instead of mmseqs search")
 
     comp_neighbors = subparsers.add_parser("compare_neighborhoods",parents=[parent_parser],help="Compare multiple neighborhood tsvs")
     comp_neighbors.add_argument('--neighborhood1','-n1',type=str,required=True,help="Give full path to 1st neighborhood to compare")

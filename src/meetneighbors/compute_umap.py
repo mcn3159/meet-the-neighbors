@@ -38,7 +38,7 @@ def unpack_embeddings(glm_out_dir,glm_in_dir,mmseqs_clust,logger, **kwargs): # l
         # nn_hash_df = pd.merge(nn_hash_df,input_tsv[['neighborhood','rep_index','nn_hashes']],on='nn_hashes',how='left')
         nn_hash_df = pd.merge(nn_hash_df,input_tsv[['rep_index','nn_hashes','rep']],on='nn_hashes',how='left')
         del input_tsv
-        nn_hash_df = nn_hash_df.loc[nn_hash_df['rep_x']==nn_hash_df['rep_y']].drop_duplicates()
+        nn_hash_df = nn_hash_df.loc[nn_hash_df['rep_x']==nn_hash_df['rep_y']].drop_duplicates() # this works because rep_x are only reps that belonged to a query prot
         nn_hash_df.reset_index(drop=True,inplace=True) # need to reset_index b/c pd.concat will create NAs if not
         logger.debug("nn_hash_df has merged with input_tsv")
         # if memory fails again maybe try converting the necessary input_tsv cols into a numpy arrays
