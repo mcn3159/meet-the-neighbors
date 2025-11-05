@@ -130,7 +130,10 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
         end_mask = gff_df['end'].values <= row.end + window
 
         # # Combine all masks
-        final_mask = strand_mask & seq_id_mask & start_mask & end_mask
+        if not args.head_on:
+            final_mask = strand_mask & seq_id_mask & start_mask & end_mask
+        else:
+            final_mask = seq_id_mask & start_mask & end_mask
         neighborhood_df = gff_df[final_mask].copy()
 
         neighborhood_df['VF_center'] = row.protein_id
@@ -169,16 +172,20 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
         # remove neighborhoods that don't fit specified conditions
         if len(neighborhood_df) < args.min_prots: #neighborhood centers could be near a contig break causing really small neighborhoods, which isnt helpful info, remove these
             removed_neighborhoods.append(neighborhood_df['VF_center'].iloc[0] + '!!!' + neighborhood_df['gff_name'].iloc[0]) # save this info for debugging later
-            if report < max_neighbors_report:
-                logger.warning(f"Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are less than {args.min_prots} proteins") #maybe I should output this type of info to a text file
-                report +=1
+            # if report < max_neighbors_report:
+            #     logger.warning(f"Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are less than {args.min_prots} proteins") #maybe I should output this type of info to a text file
+            #     report +=1
             continue
-        if len(neighborhood_df) > args.max_prots: # glm can handle up to 30 proteins
-            removed_neighborhoods.append(neighborhood_df['VF_center'].iloc[0] + '!!!' + neighborhood_df['gff_name'].iloc[0])
-            if report < max_neighbors_report:
-                logger.warning(f"Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are more than {args.max_prots} proteins")
-                report +=1
-            continue
+        if len(neighborhood_df) > args.max_prots: # glm can handle up to 30 proteins.
+            # num_prots_to_remove = neighborhood_df.shape[0] - args.max_prots
+            center_pos = neighborhood_df.loc[neighborhood_df['protein_id'] == row.protein_id, 'start'].iloc[0]
+            dists_frm_center = (neighborhood_df['start'] - center_pos).abs()
+            
+            # Get indices of proteins to keep (those with smallest distances)
+            neighborhood_df['_dist'] = dists_frm_center
+            
+            # Sort by distance and keep the top max_prots (seed will have distance 0)
+            neighborhood_df = neighborhood_df.nsmallest(args.max_prots, '_dist').drop(columns='_dist')
 
         if genome_query:
             # below 2 lines are here for memory saving purposes. If I save then later concat the whole df, it will take up a lot of mem
@@ -189,12 +196,6 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
 
             neighborhood_df = neighborhood_df[['protein_id','start','strand','neighborhood_name']]
         neighborhoods.append(neighborhood_df)
-    
-    # save removed neighborhoods to a temporary text file for each partition, for analysis later
-    
-    tmpf = tempfile.NamedTemporaryFile(mode='w+t',prefix='protgff_',suffix='.txt',dir=tmpd,delete=False)
-    tmpf.writelines(f"{prot_gff}\n" for prot_gff in removed_neighborhoods)
-    tmpf.close()
     return neighborhoods
 
 def run_fasta_from_neighborhood(logger,args,dir_for_fasta,neighborhood,**kwargs):
@@ -202,9 +203,9 @@ def run_fasta_from_neighborhood(logger,args,dir_for_fasta,neighborhood,**kwargs)
     #modify this func to output fastas in a separate directory
     partitions = kwargs.get("threads",4)
     out_folder = kwargs.get("out_folder","") # the alternative is blank so that the outdir is the current working directory
-    fasta_per_neighborhood = kwargs.get("fasta_per_neighborhood",None)
+    # fasta_per_neighborhood = kwargs.get("fasta_per_neighborhood",None)
 
-    seq_recs = db.map(pg.get_protseq_frmFasta,logger,args,dir_for_fasta,neighborhood,fasta_per_neighborhood=fasta_per_neighborhood)
+    seq_recs = db.map(pg.get_protseq_frmFasta,logger,args,dir_for_fasta,neighborhood)
     seq_recs.flatten().repartition(partitions).to_textfiles(f"{out_folder}combined_fasta_partition*.faa")
     return
         

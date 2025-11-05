@@ -58,7 +58,6 @@ def get_parser():
 
     extract_neighbors = subparsers.add_parser("extract_neighbors",parents=[parent_parser],help="Extract neighborhoods from fastas/gffs")
     extract_neighbors.add_argument("--test_fastas", type=str, required=False, default=None, help="Run with test fastas?")
-    extract_neighbors.add_argument("--fasta_per_neighborhood", required=False, type=str, default=None, help="To get one fasta per neighborhood")
     extract_neighbors.add_argument("--from_vfdb","-v",required=False,action="store_true",default=None,help="Indicate if search queries are solely from vfdb, to then group by their vf_name")
     extract_neighbors.add_argument("--min_hits","-mih",required=False,type=int,default=0,help="Minimum number of genomes required to report neighborhood")
     extract_neighbors.add_argument("--glm",required=False,action="store_true",help="Create output formatted for glm input.")
@@ -347,7 +346,11 @@ def workflow(parser):
                 else:
                     glm_res_d_vals_predf =  cu.unpack_embeddings(args.out+glm_ouputs_out,args.out+glm_input_out,mmseqs_clust,logger)
                     embedding_df_merge = cu.get_glm_embeddf(glm_res_d_vals_predf)
+                # embedding_df_merge_centroids = embedding_df_merge.groupby('query')[embedding_df_merge.columns[2:2+1280]].mean().reset_index()
+                # embedding_df_merge_centroids.to_csv(f'{args.out}glm_embeds_centroids.tsv',sep="\t",index=False)
                 embedding_df_merge.to_csv(f"{args.out}glm_embeds.tsv",sep="\t",index=False)
+                # embedding_df_merge = embedding_df_merge_centroids.copy()
+                # del embedding_df_merge_centroids
         
         elif args.resume and  os.path.isfile(f"{args.out}glm_embeds.tsv"):
             mmseqs_clust = dd.read_csv(f'{args.out}clust_res_in_neighborhoods/mmseqs_clust.tsv',sep="\t",dtype={'query': 'object'}).compute()
@@ -363,8 +366,8 @@ def workflow(parser):
             models_dict = l.load_clf_models()
             nn_preds_res = nc.get_embed_preds(embedding_df_merge,models_dict['nn_clf'],lb=lb,args=args)
 
-            logger.debug(f"Number of queries, and number of neighborhoods in dataset respectively: {len(set(mmseqs_clust['query']))} and {len(set(mmseqs_clust['neighborhood_name']))}")
-            logger.debug(f"Number of queries, and number of neighborhoods with predictions respectively: {len(set(nn_preds_res['query']))} and {len(set(nn_preds_res['neighborhood_name']))}")
+            # logger.debug(f"Number of queries, and number of neighborhoods in dataset respectively: {len(set(mmseqs_clust['query']))} and {len(set(mmseqs_clust['neighborhood_name']))}")
+            # logger.debug(f"Number of queries, and number of neighborhoods with predictions respectively: {len(set(nn_preds_res['query']))} and {len(set(nn_preds_res['neighborhood_name']))}")
 
             logger.debug("Saving neighborhood based predictions to a .tsv file...")
             nn_preds_res.to_csv(f"{args.out}neighborhood_based_predictions.tsv",sep="\t",index=False)
@@ -397,7 +400,7 @@ def workflow(parser):
             struct_preds_res.to_csv(f"{args.out}structure_based_predictions.tsv",sep="\t",index=False)
 
             logger.debug("Integrating neighborhood and structure based predictions")
-            nn_preds_res.drop(columns=['nn_hashes'],inplace=True) # don't need this col in integrated preds, also, fcks up indexing for integrated preds cols
+            # nn_preds_res.drop(columns=['nn_hashes'],inplace=True) # don't need this col in integrated preds, also, fcks up indexing for integrated preds cols
             nn_struct_preds = pd.merge(nn_preds_res,struct_preds_res,on='query',how='left')
             
             nn_struct_preds.fillna(0.0,inplace=True) # some queries don't show up in structure search b/c no hits. Which is why there are more neighborhoods than struct hits

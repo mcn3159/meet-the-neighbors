@@ -56,54 +56,70 @@ def get_neighborhoodIDs_wGFF(specific_ids,df,window):
         return None
     return neighborhoods
 
-def get_protseq_frmFasta(logger,args,dir_for_fastas,neighborhood,fasta_per_neighborhood):
-    # this function defines the neighborhood naming schema and pulls neighborhood protein components from the fasta
+    
+def get_protseq_frmFasta(logger, args, dir_for_fastas, neighborhood):
+    """Optimized version with pre-computed lookups and efficient filtering."""
     rec = None
     try:
-        # define neighborhood naming schema
-        neighborhood_name = f'{neighborhood.iloc[0].VF_center}!!!{neighborhood.iloc[0].gff_name}!!!{neighborhood.iloc[0].seq_id}!!!{neighborhood.iloc[0].start}-{neighborhood.iloc[-1].end}'
-        if isinstance(args.genome_tsv,pd.DataFrame):
-            fasta_dir = args.genome_tsv[args.genome_tsv['genome']==neighborhood.iloc[0].gff_name]['protein'].iloc[0]
-            rec = [SeqRecord(rec.seq,id=rec.id.split('|')[-1],description=rec.description) 
-                   for rec in SeqIO.parse(fasta_dir,"fasta") if rec.id.split('|')[-1] in list(neighborhood.protein_id)] # Sometimes proteins ids in gff are different from protein ids like when ids in genomes made from prokka are a bit diff than what is found in refseq. Luckily they tend to be the same after '|'
-        else:
-            if dir_for_fastas[-1] != '/':
-                dir_for_fastas += '/'
-            fasta_dir = dir_for_fastas+neighborhood.iloc[0].gff_name+'_protein.faa'
-
-        # if statement here is quick fix to make this function compatible with chop genome
-        if not os.path.isfile(fasta_dir):
-            fasta_dir = dir_for_fastas+neighborhood.iloc[0].gff_name+'.faa'
-            # logger.warning(f"fasta to get proteins from in pg: {fasta_dir}")
-            if not os.path.isfile(fasta_dir):
-                fasta_dir = dir_for_fastas+neighborhood.iloc[0].gff_name+'.fasta'
-                assert os.path.isfile(fasta_dir), f"Protein file for {dir_for_fastas+neighborhood.iloc[0].gff_name} could not be found."
-            rec = [SeqRecord(rec.seq,id=rec.id.split('|')[-1],description=rec.description) 
-                   for rec in SeqIO.parse(fasta_dir,"fasta") if rec.id.split('|')[-1] in list(neighborhood.protein_id)] # Sometimes proteins ids in gff are different from protein ids like when ids in genomes made from prokka are a bit diff than what is found in refseq
-   
-        else:
-            fasta = SeqIO.parse(fasta_dir,'fasta')
-            if rec == None:
-                rec = list(filter(lambda x: x.id in list(neighborhood.protein_id),fasta)) # subset originial fasta for ids in neighborhood
+        # Pre-compute values used multiple times
+        first_row = neighborhood.iloc[0]
+        last_row = neighborhood.iloc[-1]
         
-        # remove list in front of filter, in line above
-        if len(rec) < args.min_prots or len(rec) > args.max_prots:
-            # some proteins may not be found during filter() in .faa, so remove neighborhood if they go against params
-            return []
-        # protein ids need this info for glm input and for later processing
-        rec = map(lambda x: SeqRecord(x.seq,id=
-                                    x.id+f'!!!{neighborhood_name}'+f'!!!{neighborhood[neighborhood["protein_id"]==x.id]["start"].values[0]}'+
-                                    f"!!!{neighborhood[neighborhood['protein_id']==x.id]['strand'].values[0]}"
-                                    ,description=x.description.split(f'{x.id} ')[1]),rec)
-        if fasta_per_neighborhood: #make sure to_fasta is either False, or the name of the file when running
-            neighborhood_fasta_name = neighborhood_name + '.faa'
-            if Path(neighborhood_fasta_name).is_file():
-                logger.warning('Neighborhood fasta with same name already exists')
-            else:
-                with open(neighborhood_fasta_name, 'w') as handle:
-                    SeqIO.write(rec, handle, "fasta")
+        # Define neighborhood naming schema
+        neighborhood_name = f'{first_row.VF_center}!!!{first_row.gff_name}!!!{first_row.seq_id}!!!{first_row.start}-{last_row.end}'
+        
+        # Convert protein_id to set for O(1) lookups instead of O(n)
+        protein_ids = set(neighborhood.protein_id)
+        
+        # Pre-build lookup dictionary for start positions and strands (avoid repeated DataFrame queries)
+        protein_lookup = {
+            row.protein_id+'!!!'+str(i): (row.start, row.strand)
+            for i,row in enumerate(neighborhood.itertuples())
+        }
+        
+        # Determine fasta directory
+        if isinstance(args.genome_tsv, pd.DataFrame):
+            fasta_dir = args.genome_tsv[args.genome_tsv['genome'] == first_row.gff_name]['protein'].iloc[0]
         else:
-            return list(map(lambda x: x.format("fasta")[:-1],rec))
+            if not dir_for_fastas.endswith('/'):
+                dir_for_fastas += '/'
+            
+            # Try different filename patterns
+            for suffix in ['_protein.faa', '.faa', '.fasta']:
+                fasta_dir = dir_for_fastas + first_row.gff_name + suffix
+                if os.path.isfile(fasta_dir):
+                    break
+            else:
+                raise AssertionError(f"Protein file for {dir_for_fastas + first_row.gff_name} could not be found.")
+        
+        # Parse and filter FASTA records
+        rec = {}
+        for record in SeqIO.parse(fasta_dir, "fasta"):
+            # Extract ID after last '|'
+            rec_id = record.id.split('|')[-1]
+            
+            if rec_id in protein_ids:
+                # Create new record with modified ID
+                # new_rec = SeqRecord(record.seq, id=rec_id, description=record.description)
+                record.id = rec_id
+                rec[record.id] = [record.seq,record.description.split(f'{record.id} ')[1]]
+                
+                # Early exit if we've found all proteins
+                if len(rec) == len(protein_ids):
+                    break
+        assert len(rec) == len(protein_ids), f"Protein ID from nn {neighborhood_name} is missing from {fasta_dir}"
+
+        # # Check protein count constraints
+        # if len(rec) < args.min_prots or len(rec) > args.max_prots:
+        #     return []
+        
+        # Build final records with enhanced IDs
+        result = [SeqRecord(id = f"{p.split('!!!')[0]}!!!{neighborhood_name}!!!{protein_lookup[p][0]}!!!{protein_lookup[p][1]}",
+                            description=rec[p.split('!!!')[0]][1], seq=rec[p.split('!!!')[0]][0]).format("fasta")[:-1] 
+                            for p in protein_lookup]
+        
+        return result
+        
     except AttributeError:
         traceback.print_exc()
         logger.error('Item did not contain neighborhood')
