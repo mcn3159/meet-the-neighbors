@@ -11,6 +11,7 @@ def unpack_embeddings(glm_out_dir,glm_in_dir,mmseqs_clust,logger, **kwargs): # l
     if mem_optimize:
         nn_hash_df = pd.DataFrame([(k, *vals) for k, lst in mem_optimize.items() for vals in lst],columns=['nn_hashes','query','rep','neighborhood_name'])
         mem_optimize = True # here cus im tired, instead of making new func input for nn_hash 
+        # query_rep_d = nn_hash_df.groupby('rep')['query'].apply(set).to_dict() # this is a dict of query to set of reps that are in the gLM batch for that query, this is used to subset the nn_hash_df for only the reps that are in the gLM batch for each query
 
     glm_folders_o = [folder for folder in glob.glob(glm_out_dir+"/*") if os.path.isdir(folder)]
     glm_vf_fldrs_o = {fold.split('/')[-1]:fold for fold in glm_folders_o}
@@ -26,26 +27,27 @@ def unpack_embeddings(glm_out_dir,glm_in_dir,mmseqs_clust,logger, **kwargs): # l
         input_tsv['rep'] = input_tsv['rep'].str.split(';')
         input_tsv = input_tsv.explode('rep').reset_index(drop=True).reset_index(names='rep_index') # now rep_index numbers should line up with what's in glm_batch
         input_tsv['rep'] = input_tsv['rep'].str[1:]
-        logger.debug("Input tsv exploded")
 
         mmseqs_clust = mmseqs_clust.loc[mmseqs_clust['prot_gffname'] == (mmseqs_clust['VF_center'] +'!!!'+ mmseqs_clust['gff'])] # subset mmseqs_clust for rows with VF centers
 
-        # input_tsv = input_tsv[input_tsv['rep'].isin(set(mmseqs_clust['rep']))] # now its only VF centers in glm_inputs
         input_tsv = pd.merge(input_tsv,mmseqs_clust[['neighborhood_name','nn_hashes']],on='neighborhood_name',how='left')
         del mmseqs_clust
-        logger.debug("Input tsv merged") 
         nn_hash_df = nn_hash_df[nn_hash_df['nn_hashes'].isin(set(input_tsv['nn_hashes']))] # need to subset since not all hashes are in one chunk of glm_inputs
-        # nn_hash_df = pd.merge(nn_hash_df,input_tsv[['neighborhood','rep_index','nn_hashes']],on='nn_hashes',how='left')
-        nn_hash_df = pd.merge(nn_hash_df,input_tsv[['rep_index','nn_hashes','rep']],on='nn_hashes',how='left')
+        nn_hash_df_m = pd.merge(nn_hash_df,input_tsv[['rep_index','nn_hashes','rep']],on='nn_hashes',how='left')
         del input_tsv
-        nn_hash_df = nn_hash_df.loc[nn_hash_df['rep_x']==nn_hash_df['rep_y']].drop_duplicates() # this works because rep_x are only reps that belonged to a query prot
-        nn_hash_df.reset_index(drop=True,inplace=True) # need to reset_index b/c pd.concat will create NAs if not
-        logger.debug("nn_hash_df has merged with input_tsv")
+        nn_hash_df_m.drop_duplicates(subset=['neighborhood_name','rep_index','rep_y'],inplace=True)
+        nn_hash_df_m = nn_hash_df_m.loc[nn_hash_df_m['rep_x']==nn_hash_df_m['rep_y']] # this works because rep_x are only reps that belonged to a query prot
+        nn_hash_df_m.reset_index(drop=True,inplace=True) # need to reset_index b/c pd.concat will create NAs if not
         # if memory fails again maybe try converting the necessary input_tsv cols into a numpy arrays
-        rep_inds = nn_hash_df['rep_index'].values
+        rep_inds = nn_hash_df_m['rep_index'].values
         glm_batch = np.array(glm_batch, dtype=object)
         glm_batch = pd.DataFrame(np.vstack(glm_batch[rep_inds][:,1])) # got to vstack b/c glm_batch[rep_inds] makes an array of arrays and not just a normal 2D array
-        glm_embeds_df_piece = pd.concat([nn_hash_df[['query','neighborhood_name']],glm_batch],axis=1)
+        glm_embeds_df_piece = pd.concat([nn_hash_df_m[['neighborhood_name','rep_y']],glm_batch],axis=1) 
+        glm_embeds_df_piece = pd.merge(glm_embeds_df_piece,nn_hash_df.rename(columns={'rep':'rep_y'})[['query','rep_y','neighborhood_name']],on=['neighborhood_name','rep_y'],how='left') # merging with originial (on purpose) nn_hash_df pre merge to get query labels. See comments below
+        glm_embeds_df_piece = glm_embeds_df_piece.explode('query').reset_index(drop=True) # this is necessary because some queries have multiple reps in the gLM batch, so we need to explode the query column to match the number of rows in the glm_batch
+        glm_embeds_df_piece.drop_duplicates(subset=['query','neighborhood_name'],inplace=True)
+
+        # keep the below comments for future ref
         # current issue is that sometimes the same rep can be a query in one nn, and not in another
         # this is b/c query labels are mapped by lc and not rep
         # this issue then causes the over representation of reps at unnecessary instances (when their not a query) in the final res
@@ -54,11 +56,6 @@ def unpack_embeddings(glm_out_dir,glm_in_dir,mmseqs_clust,logger, **kwargs): # l
         # for each nn in the recent merge grab the rep of the vf_center or where nn_hash_df rep = input_tsv rep
 
         return glm_embeds_df_piece
-    # nn_hash_df starts off with the query (from VF_center),nn and hash
-    # maybe make a df with columns: rep,nn from input_tsv, index: 0-n_reps, index_matches those in glm_outputs
-    # map df indices to reps in mmseqs_clust_sub
-    # filter mmseqs_clust_sub for hashes in input_tsv, but remove nns from mmseqs_clust_sub that are in input_tsv
-    # now subset glm_batch for indices in mmseqs_clust_sub
     
     query_reps = mmseqs_clust.dropna(subset='query').groupby('neighborhood_name')['rep'].apply(set).to_dict() # some queries may not be the VF center of the neighborhoodname key, but that's ok for this usecase
     

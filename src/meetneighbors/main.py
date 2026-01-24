@@ -45,7 +45,7 @@ def get_parser():
     parent_parser.add_argument("--neighborhood_size","-ns",type=int, required=False, default=20000, help="Size in bp of neighborhood to extract. 10kb less than start, and 10kb above end of center DNA seq")
     parent_parser.add_argument("--min_prots","-mip",type=int, required=False, default=3, help="Minimum number of proteins in neighborhood")
     parent_parser.add_argument("--max_prots","-map",type=int, required=False, default=30, help="Maximum number of proteins in neighborhood")
-    parent_parser.add_argument("-ig","--intergenic",required=False,default=4000,type=int,help="Set a maximum cutoff for the integenic distance of a neighborhood")
+    parent_parser.add_argument("-ig","--intergenic",required=False,default=None,type=int,help="Set a maximum cutoff for the integenic distance of a neighborhood")
     parent_parser.add_argument("--red_olp",required=False,action="store_true",help="Reduce amount of overlapping neighborhoods. Default 10kb.")
     parent_parser.add_argument("--olp_window",required=False,type=int,default=20000,help="Change allowable overlap between neighborhoods.")
     parent_parser.add_argument("-ho","--head_on",required=False,action="store_true",help="Extract neighborhoods with genes in opposite orientations")
@@ -238,6 +238,8 @@ def workflow(parser):
             glm_input_out,glm_input2_out,glm_ouputs_out = "glm_inputs","glm_input2_out/","glm_outputs" # slashes and non slashes done purposefuly
             if (args.resume and len(glob.glob(args.out+glm_ouputs_out+'/**/results/results/batch.pkl.glm.embs.pkl'))*2 != len(glob.glob(args.out+glm_input_out+'/*'))) or (not args.resume) or (len(glob.glob(args.out+glm_input_out+'/*'))==0):
                 cluster_neighborhoods_by = "query"
+                if not (args.query_fasta or args.prot_genome_pairs):
+                    cluster_neighborhoods_by = "gff"
                 logger.debug("Creating groups of neighborhoods by their originial query")
                 mmseqs_clust_nolink_groups = pn.get_query_neighborhood_groups(mmseqs_clust,cluster_neighborhoods_by)
                 uniq_neighborhoods_d = {q:set(grp['neighborhood_name']) for q,grp in mmseqs_clust_nolink_groups} # quick and dirty fix for glm inputs and glm_outputs
@@ -272,7 +274,13 @@ def workflow(parser):
                     qs_for_glm = np.array(list(uniq_neighborhoods_d.keys()))
                     while (mmseqs_clust_mem/its) * args.threads > args.mem:
                         its+=1
-                    its+=7 # creating more chunks for faster processing
+                    if its > 1 and (its < len(qs_for_glm)): # this means the mmseqs_clust is large for just a few queries relative to mem
+                        its+= min(10, len(qs_for_glm) - its) # creating more chunks for faster processing, also to avoid the case where the number of chunks is greater than the number of queries, which would cause an empty array in np.array_split
+                    elif its == 1:
+                        its = min(10, len(qs_for_glm)) # if the df is small enough to fit into mem, just split it into 10 chunks for faster processing
+                    elif its > (len(qs_for_glm)): # make sure we're not using more its than queries or else there will be empty arrays in qs_for_glm (post array split)
+                        its = len(qs_for_glm)
+                    logger.debug(f"Splitting mmseqs clustering df into {its} chunks...")
                     qs_for_glm = np.array_split(qs_for_glm,its)
 
                     # get the glm inputs for all neighborhoods, by iterating through a "chunk" number of neighborhoods
@@ -292,31 +300,32 @@ def workflow(parser):
                         if args.query_fasta or args.prot_genome_pairs: # for only query_fasta and prot_genome_pairs here b/c predicting from genomes already runs pretty fast
                             glm.get_glm_fasta_input(fasta_path=singular_combinedfasta,
                                                     glm_input_dir = args.out + glm_input2_out,
-                                                    protids = protids,
+                                                    protids = protids, 
                                                     args=args,it = i)
                             glm.concat_tsv_fastas(args.out + glm_input_out, args.out + glm_input2_out, chunk=chunk, i = i)
-
-                        else:
-                            query_db = list(mmseqs_clust_sub.groupby('query'))
-                            query_db = db.from_sequence(query_db,npartitions=args.threads)
-                            singular_combinedfasta_l = glm.SeqIO.parse(singular_combinedfasta,'fasta')
-                            singular_combinedfasta_l = list(filter(lambda x: x.id.split('|')[-1] in protids))
-                            db.map(glm.get_glm_fasta_input,fasta_path=singular_combinedfasta_l,
-                                                    glm_input_dir=f"{args.out}glm_input/",
-                                                    query_grp = query_db,
-                                                    args=args).compute()
+                            
+                        #     query_db = list(mmseqs_clust_sub.groupby('query'))
+                        #     query_db = db.from_sequence(query_db,npartitions=args.threads)
+                        #     singular_combinedfasta_l = glm.SeqIO.parse(singular_combinedfasta,'fasta')
+                        #     singular_combinedfasta_l = list(filter(lambda x: x.id.split('|')[-1] in protids,singular_combinedfasta_l))
+                        #     db.map(glm.get_glm_fasta_input,fasta_path=singular_combinedfasta_l,
+                        #                             glm_input_dir=f"{args.out}glm_input/",
+                        #                             query_grp = query_db,
+                        #                             args=args).compute()
                         del mmseqs_clust_sub
                     
                 else:
                     query_db = db.from_sequence(prot_queries,npartitions=args.threads)
                     db.map(glm.get_glm_input,query=query_db,mmseqs_clust=mmseqs_clust,combinedfasta=singular_combinedfasta,glm_input_dir=glm_input_out,uniq_neighborhoods_d=uniq_neighborhoods_d,
-                            logger=logger,args=args).compute() # needs to be adjusted for get_glm_fasta_input(), and modified get_glm_input
-                
+                            logger=logger,args=args).compute() # needs to be adjusted for get_glm_fasta_input(), and modified get_glm_input                        
+
                 if args.query_fasta or args.prot_genome_pairs: # for only query_fasta and prot_genome_pairs here b/c predicting from genomes already runs pretty fast
                         shutil.rmtree(args.out + glm_input_out) # remove originial glm_inputs dir to save file space
                         shutil.move(args.out + glm_input2_out, args.out + glm_input_out)
+                else: # don't neeed glm_input2_out for genomes mode
+                    os.symlink(singular_combinedfasta,args.out + glm_input_out + '/combined_fastas_clust_rep.fasta') # if running w/ genomes only we don't need to create new fastas for everything, just symlink to the reps
+                    shutil.rmtree(args.out + glm_input2_out)
                     
-            
                 try:
                     os.mkdir(args.out + glm_ouputs_out) # should return an error if the path already exists, incase program finished in the middle of creating inputs, restart from here
                 except FileExistsError as e: # if running w/ resume and glm_inputs directory is already made, clear it then make inputs from the beginning
@@ -348,6 +357,7 @@ def workflow(parser):
                     embedding_df_merge = cu.get_glm_embeddf(glm_res_d_vals_predf)
                 # embedding_df_merge_centroids = embedding_df_merge.groupby('query')[embedding_df_merge.columns[2:2+1280]].mean().reset_index()
                 # embedding_df_merge_centroids.to_csv(f'{args.out}glm_embeds_centroids.tsv',sep="\t",index=False)
+                embedding_df_merge.reset_index(drop=True,inplace=True)
                 embedding_df_merge.to_csv(f"{args.out}glm_embeds.tsv",sep="\t",index=False)
                 # embedding_df_merge = embedding_df_merge_centroids.copy()
                 # del embedding_df_merge_centroids
@@ -359,7 +369,8 @@ def workflow(parser):
             else:
                 singular_combinedfasta = f"{args.out}combined.fasta"
             logger.debug('gLM embedding data found, loading tsv')
-            embedding_df_merge = pd.read_csv(f"{args.out}glm_embeds.tsv",sep="\t")
+            embedding_df_merge = pd.read_csv(f"{args.out}glm_embeds.tsv",sep="\t") # kept getting oom errors with dask here
+            logger.debug('gLM embedding data loaded')
             
         if args.subcommand == 'predictvf':
             lb = pkl_objs['labelbinarizer_vfcategories.obj']
@@ -382,20 +393,27 @@ def workflow(parser):
                 logger.debug(f"Done! Took --- %s seconds --- to complete" % (time.time() - start_time))
                 return 
             # pull together structure search results
-            logger.debug("Foldseek search query proteins against VF and NS database...")
+            if args.resume and os.path.isfile(f"{args.out}foldseek_search_labelsmapped.tsv"):
+                struct_search = pd.read_csv(f"{args.out}foldseek_search_labelsmapped.tsv",sep="\t")
+            else:
+                logger.debug("Foldseek search query proteins against VF and NS database...")
 
-            struct_search_raw = sc.foldseek_search(args)
-            tsvs_d = l.load_vf_functional_mappers()
-            vfid_mapping,vfquery_vfid = tsvs_d['VFID_mapping_specified.tsv'],tsvs_d['vfquery_to_id_tocat.tsv']
-            struct_search = sc.format_search([struct_search_raw],meta = ['q_vn'],vfquery_vfid=vfquery_vfid,vfmap_df=vfid_mapping)
-            struct_search = sc.format_searchlabels(struct_search)
-            struct_search.to_csv(f"{args.out}foldseek_search_labelsmapped.tsv",sep="\t",index=False)
+                struct_search_raw = sc.foldseek_search(args,logger)
+                tsvs_d = l.load_vf_functional_mappers()
+                vfid_mapping,vfquery_vfid = tsvs_d['VFID_mapping_specified.tsv'],tsvs_d['vfquery_to_id_tocat.tsv']
+                struct_search = sc.format_search([struct_search_raw],meta = ['q_vn'],vfquery_vfid=vfquery_vfid,vfmap_df=vfid_mapping)
+                struct_search = sc.format_searchlabels(struct_search)
+                struct_search.to_csv(f"{args.out}foldseek_search_labelsmapped.tsv",sep="\t",index=False)
 
             logger.debug("Collecting best structural similarity for each functional group if exists...")
             struct_search_queries = set(struct_search['query'])
             logger.info(f"Structure-based search results for {len(set(nn_preds_res['query']) - struct_search_queries)} queries could not be found...") # i should default these missing similarities to the nn preds
-            queries_db = db.from_sequence(struct_search_queries,npartitions = args.threads)
-            pred_raw = db.map(sc.alltopNhits_probs_threadable,queries_db,df=struct_search[['query','target','mean_score','tvf_category']],score_metric="mean_score",lb=lb).compute()
+            pred_dict = (
+                struct_search[['query', 'target', 'mean_score', 'tvf_category']]
+                .groupby('query', group_keys=False)
+                .apply(lambda g: sc.alltopNhits_probs_groupby(g, score_metric="mean_score", lb=lb)) # took about 2-3 min on 9095 queries
+            )
+            pred_raw = [[pred_dict[query], query] for query in pred_dict.index]
             struct_preds_res = sc.format_strucpreds(pred_raw=pred_raw,lb=lb)
             struct_preds_res.to_csv(f"{args.out}structure_based_predictions.tsv",sep="\t",index=False)
 

@@ -21,7 +21,7 @@ def load_pickle():
 
 def load_clf_models():
     # return path of model for pytorch to work with
-    models_dict = {"nn_clf":importlib.resources.path("meetneighbors.predictvfs.models","nn_clf_pytorch_cats_edssubcats_832025.bin"),
-                   "int_clf":importlib.resources.path("meetneighbors.predictvfs.models","meta-LR_832025.obj")}
+    models_dict = {"nn_clf":importlib.resources.path("meetneighbors.predictvfs.models","nn_clf_pytorch_cats_clusterholdout_11192025.bin"),
+                   "int_clf":importlib.resources.path("meetneighbors.predictvfs.models","meta-LR_12222025.obj")}
     return models_dict
     

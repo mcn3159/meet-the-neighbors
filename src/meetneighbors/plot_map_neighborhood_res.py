@@ -34,7 +34,7 @@ def prep_cluster_tsv(mmseqs_res_dir,logger,**kwargs):
         mmseqs['neighborhood_name'] = mmseqs['VF_center'] + '!!!' + mmseqs['gff'] + '!!!' + mmseqs['seq_id'] + '!!!' + mmseqs['locus_range'] #VF_center in non_vf calls are simply just the query hits
         mmseqs['prot_gffname'] = mmseqs['locus_tag'].str.split('!!!').str[0] + '!!!' + mmseqs['gff']
 
-    elif genome_query: # sometimes the protein ids in the gff and protein fasta slightly don't match. Setting this rule that only takes ID after the |. 
+    elif genome_query: # sometimes the protein ids in the gff and protein fasta slightly don't match. Setting this rule that only takes ID after the |. B/c mmseqs does something similar
         mmseqs['locus_tag'] = mmseqs['locus_tag'].str.split('|').str[-1]
         mmseqs['rep'] = mmseqs['rep'].str.split('|').str[-1]
 
@@ -156,16 +156,9 @@ def hash_neighborhoods(mmseqs_clust,args):
 
     # We want one hash per neighborhood, and then later map the neighborhood and it's respective query back to the final results.
     # Need to make sure that the query matches the nn VF_center for this to work correctly. 
-    nn_hash = mmseqs_clust.loc[mmseqs_clust['prot_gffname'] == (mmseqs_clust['VF_center'] +'!!!'+ mmseqs_clust['gff'])].groupby('nn_hashes')[['query','rep','neighborhood_name']].apply(lambda x: x.values.tolist()).to_dict()
+    nn_hash = mmseqs_clust.loc[mmseqs_clust['prot_gffname'] == (mmseqs_clust['VF_center'] +'!!!'+ mmseqs_clust['gff'])].groupby('nn_hashes',dropna=True)[['query','rep','neighborhood_name']].apply(lambda x: x.values.tolist()).to_dict()
     nn_per_hash = mmseqs_clust.groupby('nn_hashes',group_keys=False)['neighborhood_name'].apply(lambda x: x.sample(1))
     mmseqs_clust = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(nn_per_hash)]
-
-    if not args.query_fasta:
-        mmseqs_clust['VF_center'],mmseqs_clust['gff'],mmseqs_clust['seq_id'],mmseqs_clust['locus_range'] = mmseqs_clust['neighborhood_name'].str.split('!!!').str[0],\
-                                                                            mmseqs_clust['neighborhood_name'].str.split('!!!').str[1],\
-                                                                            mmseqs_clust['neighborhood_name'].str.split('!!!').str[2],\
-                                                                            mmseqs_clust['neighborhood_name'].str.split('!!!').str[3]
-        mmseqs_clust['prot_gffname'] = mmseqs_clust['locus_tag'].str.split('!!!').str[0] + '!!!' + mmseqs_clust['gff']
 
     return mmseqs_clust, nn_hash
 

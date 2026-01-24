@@ -48,10 +48,13 @@ def infer(logging, data_dir, model,output_path, device, id_dict, B_SIZE):
     if HALF:
         logging.info("Inference with mixed precision model")
         scaler = torch.cuda.amp.GradScaler()
+    
+    best_layer = 1
 
     for pkl_f in tqdm(test_pkls, total=len(test_pkls)):
         input_embs = []
         hidden_embs = []
+        hidden_embs2 = []
         label_embs = []
         all_contacts = []
         all_prot_ids = []
@@ -82,10 +85,14 @@ def infer(logging, data_dir, model,output_path, device, id_dict, B_SIZE):
             if scaler is not None:
                 with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
                     # call model
-                    outputs = model(inputs_embeds=inputs_embeds, attention_mask=attention_mask, labels = labels, masked_tokens = masked_tokens, output_attentions = False)
+                    outputs = model(inputs_embeds=inputs_embeds, attention_mask=attention_mask, labels = labels, masked_tokens = masked_tokens, output_attentions = False, output_hidden_states=True)
                     label_embs.append(labels.cpu().detach().numpy().astype(np.float16))
                     last_hidden_states = outputs.last_hidden_state
-                    hidden_embs.append(last_hidden_states.cpu().detach().numpy().astype(np.float16))
+                    hidden_embs2.append(last_hidden_states.cpu().detach().numpy().astype(np.float16))
+                    all_hidden_states = outputs.all_hidden_states
+                    # print(all_hidden_states,flush=True)
+                    hidden_embs.append(all_hidden_states.cpu().detach().numpy().astype(np.float16))
+
                          
                     prot_ids = batch['prot_ids']
                     all_contacts.append(outputs.contacts.cpu().detach().numpy().astype(np.float16))
@@ -100,7 +107,17 @@ def infer(logging, data_dir, model,output_path, device, id_dict, B_SIZE):
                     predicted_embeds_masked.append(all_preds.cpu().detach().numpy().astype(np.float16))
                     all_probs.append(probs.cpu().detach().numpy().astype(np.float16))
         input_embs = np.concatenate(np.concatenate(input_embs, axis = 0), axis = 0) # remove batch dimension
-        hidden_embs =  np.concatenate(np.concatenate(hidden_embs, axis = 0), axis = 0) # remove batch dimension
+        hidden_embs2 =  np.concatenate(np.concatenate(hidden_embs2, axis = 0), axis = 0) # remove batch dimension
+        print("OG embeds:",hidden_embs2.shape)
+        hidden_embs = np.concatenate(hidden_embs, axis = 0)
+        hidden_embs = hidden_embs.transpose(0,2,1,3) # change from (num_seqs, num_layers, seq_len, hidden_dim) to (num_seqs, seq_len, num_layers, hidden_dim)
+        num_seqs, seq_len, num_layers, hidden_dim = hidden_embs.shape
+        hidden_embs = hidden_embs.reshape(num_seqs * seq_len, num_layers, hidden_dim)
+        print("New embeds:",hidden_embs.shape)
+        assert torch.allclose(torch.tensor(hidden_embs[-1,-1,:]),torch.tensor(hidden_embs2[-1,:])), f"OG Embeding of shape {hidden_embs2.shape} and New Embedding of shape {hidden_embs.shape} did not match. Here are the embeds with OG first: {hidden_embs2[-1,:]} \n ===================== {hidden_embs[-1,-1,:]}"
+        hidden_embs = hidden_embs[:,best_layer,:]
+        print(f"New embeds after subset for best prediction layer {best_layer}:",hidden_embs.shape)
+        # hidden_embs = np.concatenate(hidden_embs, axis = 0)
         label_embs =  np.concatenate(np.concatenate(label_embs, axis = 0), axis = 0) # remove batch dimension
         output_embs = np.concatenate(output_embs, axis = 0)
 
