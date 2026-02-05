@@ -241,6 +241,7 @@ def workflow(parser):
                 if not (args.query_fasta or args.prot_genome_pairs):
                     cluster_neighborhoods_by = "gff"
                 logger.debug("Creating groups of neighborhoods by their originial query")
+                mmseqs_clust['start'] = mmseqs_clust['start'].astype(int)
                 mmseqs_clust_nolink_groups = pn.get_query_neighborhood_groups(mmseqs_clust,cluster_neighborhoods_by)
                 uniq_neighborhoods_d = {q:set(grp['neighborhood_name']) for q,grp in mmseqs_clust_nolink_groups} # quick and dirty fix for glm inputs and glm_outputs
 
