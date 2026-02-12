@@ -1,17 +1,16 @@
 # meet the neighbors
-Medium scale identification of genomic neighbors in bacterial genomes. This program extracts neighborhoods from a set gffs and its respective protein fasta file with the same name. Extracted neighborhoods will be outputted in a fasta file, with the protein identifier denoting the neighborhood name and protein ID. Multiple neighborhoods can be placed into the same fasta file. 
+Medium scale identification of genomic contexts and virulence factors in bacterial genomes. This program extracts neighborhoods from a set gffs and its respective protein fasta file with the same name. Extracted neighborhoods will be outputted in a fasta file.
 
-To determine which protein entry in the fasta file belongs to what neighborhood, each entry in the fasta file haas a header with the following naming scheme:
+Schema for neighborhood ids:
 
-"Protein_id"!!!"Protein_center"!!!"gff_with_neighborhood"!!!"Contig_with_neighborhoods"!!!"Neighborhood_start_position"!!!"Neighborhood_end_position"!!!"Protein_start_position"!!!"strand"
+
+`protein_id!!!seed_proteinid!!!gff!!!contig!!!neighborhood_start-neighborhood_end`
 
 ### Main functionalities
 
-- Extracts neighborhoods into a protein fasta
-- Clusters similar neighborhoods found with the same intial query using DBscan (epsilon=0.15,min_samples=3)
-- Plots Neighborhood results in a bubble chart with size of bubbles being 100/(# number of neighborhoods outside of cluster+1)
+- Extracts neighborhoods of a query fasta from a given set of genomes
 - Outputs neighborhoods in compatible format for a genomic language model (https://github.com/y-hwang/gLM)
-- To be continued...
+- Predicts VFDB categories of whole genome or given fasta
 
 ### Running Program
 ```
@@ -32,7 +31,7 @@ Each genome to extract the neighborhoods from must occur in a gff and protein fa
 For example:
 
 ```
-cd genomes/
+ls genomes/
 
 GCA_000307975.2_ASM30797v2_genomic.gff
 GCA_000307975.2_ASM30797v2_protein.faa
