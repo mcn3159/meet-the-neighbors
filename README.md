@@ -12,7 +12,7 @@ Schema for neighborhood ids:
 - Outputs neighborhoods in compatible format for a genomic language model (https://github.com/y-hwang/gLM)
 - Predicts VFDB categories of whole genome or given fasta
 
-### Running Program
+### Running the program
 ```
 git clone
 ```
@@ -20,7 +20,7 @@ git clone
 Activate the conda environment
 ```
 conda env create -f environment.yml
-conda activate meet-the-neighbors
+conda activate neighborhood_env
 ```
 
 Basic run command 
