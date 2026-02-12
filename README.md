@@ -4,7 +4,7 @@ Medium scale identification of genomic contexts and virulence factors in bacteri
 Schema for neighborhood ids:
 
 
-`protein_id!!!seed_proteinid!!!gff!!!contig!!!neighborhood_start-neighborhood_end`
+`protein_id!!!seed_protein_id!!!gff!!!contig!!!neighborhood_start-neighborhood_end`
 
 ### Main functionalities
 
