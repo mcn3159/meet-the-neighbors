@@ -6,11 +6,7 @@ import dask
 dask.config.set(scheduler='processes')
 import dask.bag as db
 import os
-import tempfile
-from sklearn.cluster import AgglomerativeClustering
 
-# from process_gffs import gff2pandas
-# from process_gffs import get_protseq_frmFasta
 import meetneighbors.process_gffs as pg
 
 def read_search_tsv(**kwargs):
@@ -74,7 +70,11 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
         return gff, protein
 
     if mmseqs_group:  
-        gff, protein = get_gff_prot_filenames(mmseqs_group[1].tset.iloc[0].split('protein.fa')[0],args)
+        try:
+            gff, protein = get_gff_prot_filenames(mmseqs_group[1].tset.iloc[0].split('protein.fa')[0],args)
+        except AssertionError:
+            logger.error(f"Protein and gff file for {genome_query} could not be found. Skipping this genome.")
+            return []
         gff_df = pg.gff2pandas(gff)
         protein_ids = list(mmseqs_group[1].target)
         gff_prefix = gff.split('/')[-1].split('_genomic.gff')[0].split('.gff')[0]
@@ -112,7 +112,32 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
         logger.warning(f"Protein IDs in gff and protein fasta for genome: {gff_prefix} do not match. Skipping this genome") #!!! to add
         return []
 
-    # logger.warning(f"After size of gffdf: {vf_centers.shape}")
+    def filter_by_ig_dist(df, intergenic, vfcenter): # tried asking claude to speed this up with numpy but it took a similar amount of time! 11/20/2025
+        """ Filters a dataframe of genes to only include those that are within a certain intergenic distance from the vfcenter."""
+        df = df.sort_values('start').reset_index(drop=True)
+        seed_idx = df[df['protein_id'] == vfcenter].index[0]
+        distances = df['start'] - df['end'].shift(1)
+        distances[:seed_idx+1] = distances[:seed_idx+1].shift(-1) # shift the distances relative to the seed index so that the distance from the seed to the next gene is in the correct position
+        distances[seed_idx] = 0
+
+        d_mask = distances < intergenic
+        sub1 = d_mask[seed_idx+1:]
+        sub1 = sub1[sub1 == False]
+
+        # grab rows before seed
+        sub2 = d_mask[:seed_idx]
+        sub2 = sub2[sub2 == False]
+
+        if sub1.shape[0] > 0:
+            post_seed_remove_idx = sub1.index[0]
+            d_mask.iloc[post_seed_remove_idx:] = False
+        if sub2.shape[0] > 0:
+            pre_seed_remove_idx = sub2.index[-1]
+            d_mask.iloc[:pre_seed_remove_idx+1] = False
+
+        filtered_df = df[d_mask]
+        return filtered_df
+        
 
     window = args.neighborhood_size/2
     neighborhoods = []
@@ -130,55 +155,41 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
         end_mask = gff_df['end'].values <= row.end + window
 
         # # Combine all masks
-        final_mask = strand_mask & seq_id_mask & start_mask & end_mask
+        if not args.head_on:
+            final_mask = strand_mask & seq_id_mask & start_mask & end_mask
+        else:
+            final_mask = seq_id_mask & start_mask & end_mask
         neighborhood_df = gff_df[final_mask].copy()
 
         neighborhood_df['VF_center'] = row.protein_id
         neighborhood_df['gff_name'] =  gff_prefix # for compatibility with chop_genomes
-        neighborhood_df['locus_range'] =  f"{min(neighborhood_df['start'])}-{max(neighborhood_df['end'])}" 
+        neighborhood_df['locus_range'] =  f"{min(neighborhood_df['start'])}-{max(neighborhood_df['end'])}" # this isn't accuracte anymore b/c of what happends after the line if len(neighborhood_df) > args.max_prots:
         neighborhood_df.dropna(subset='protein_id',inplace=True)
 
         if args.intergenic: # maybe I can significantly speed this up by substracting the start positions from the previous proteins end position, if over intergenic distance, remove
             if neighborhood_df.shape[0] < 2: # skip if there's no proteins found in the neighborhood besides the center
                 continue
             
-            # og_shape = neighborhood_df.shape
-
-            clustering = AgglomerativeClustering(linkage='single', distance_threshold=args.intergenic, n_clusters= None).fit(
-                neighborhood_df[['start','end']].to_numpy())
-            
-            # # combine cluster labels w/ where each neighborhood start stop was found, indices are the same
-            # neighborhood_df = pd.concat([neighborhood_df,
-            #             pd.DataFrame(clustering.labels_,columns=['clu_label'],index=neighborhood_df.index)],
-            #             axis=1)
-
-            # Add cluster labels directly to the dataframe (more efficient than concat)
-            neighborhood_df['clu_label'] = clustering.labels_ # from claude
-            # get the cluster label of the VF center
-            clustr_labl_tokeep = neighborhood_df.loc[neighborhood_df['protein_id']==row.protein_id, 'clu_label'].iloc[0]
-
-            # only keep genes that were within the distance cutoff specified
-            neighborhood_df = neighborhood_df[neighborhood_df['clu_label'] == clustr_labl_tokeep]
-
-            # get an idea of the # of proteins removed from clustering
-            # num_prots_removed = og_shape[0] - neighborhood_df.shape[0] 
-            # if num_prots_removed > 0:
-            #     logger.warning(f"{num_prots_removed} proteins remove from neighborhood based of INTERGENIC distance...")
+            neighborhood_df = filter_by_ig_dist(neighborhood_df, args.intergenic, row.protein_id)
             
         # should make an argument that lets the user decide if they want a temp directory
         # remove neighborhoods that don't fit specified conditions
         if len(neighborhood_df) < args.min_prots: #neighborhood centers could be near a contig break causing really small neighborhoods, which isnt helpful info, remove these
             removed_neighborhoods.append(neighborhood_df['VF_center'].iloc[0] + '!!!' + neighborhood_df['gff_name'].iloc[0]) # save this info for debugging later
-            if report < max_neighbors_report:
-                logger.warning(f"Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are less than {args.min_prots} proteins") #maybe I should output this type of info to a text file
-                report +=1
+            # if report < max_neighbors_report:
+            #     logger.warning(f"Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are less than {args.min_prots} proteins") #maybe I should output this type of info to a text file
+            #     report +=1
             continue
-        if len(neighborhood_df) > args.max_prots: # glm can handle up to 30 proteins
-            removed_neighborhoods.append(neighborhood_df['VF_center'].iloc[0] + '!!!' + neighborhood_df['gff_name'].iloc[0])
-            if report < max_neighbors_report:
-                logger.warning(f"Neighborhood {row.protein_id} from gff {gff.split('/')[-1]} filtered out because there are more than {args.max_prots} proteins")
-                report +=1
-            continue
+        if len(neighborhood_df) > args.max_prots: # glm can handle up to 30 proteins.
+            # num_prots_to_remove = neighborhood_df.shape[0] - args.max_prots
+            center_pos = neighborhood_df.loc[neighborhood_df['protein_id'] == row.protein_id, 'start'].iloc[0]
+            dists_frm_center = (neighborhood_df['start'] - center_pos).abs()
+            
+            # Get indices of proteins to keep (those with smallest distances)
+            neighborhood_df['_dist'] = dists_frm_center
+            
+            # Sort by distance and keep the top max_prots (seed will have distance 0)
+            neighborhood_df = neighborhood_df.nsmallest(args.max_prots, '_dist').drop(columns='_dist')
 
         if genome_query:
             # below 2 lines are here for memory saving purposes. If I save then later concat the whole df, it will take up a lot of mem
@@ -189,12 +200,6 @@ def get_neigborhood(logger,args,tmpd,**kwargs):
 
             neighborhood_df = neighborhood_df[['protein_id','start','strand','neighborhood_name']]
         neighborhoods.append(neighborhood_df)
-    
-    # save removed neighborhoods to a temporary text file for each partition, for analysis later
-    
-    tmpf = tempfile.NamedTemporaryFile(mode='w+t',prefix='protgff_',suffix='.txt',dir=tmpd,delete=False)
-    tmpf.writelines(f"{prot_gff}\n" for prot_gff in removed_neighborhoods)
-    tmpf.close()
     return neighborhoods
 
 def run_fasta_from_neighborhood(logger,args,dir_for_fasta,neighborhood,**kwargs):
@@ -202,9 +207,9 @@ def run_fasta_from_neighborhood(logger,args,dir_for_fasta,neighborhood,**kwargs)
     #modify this func to output fastas in a separate directory
     partitions = kwargs.get("threads",4)
     out_folder = kwargs.get("out_folder","") # the alternative is blank so that the outdir is the current working directory
-    fasta_per_neighborhood = kwargs.get("fasta_per_neighborhood",None)
+    # fasta_per_neighborhood = kwargs.get("fasta_per_neighborhood",None)
 
-    seq_recs = db.map(pg.get_protseq_frmFasta,logger,args,dir_for_fasta,neighborhood,fasta_per_neighborhood=fasta_per_neighborhood)
+    seq_recs = db.map(pg.get_protseq_frmFasta,logger,args,dir_for_fasta,neighborhood)
     seq_recs.flatten().repartition(partitions).to_textfiles(f"{out_folder}combined_fasta_partition*.faa")
     return
         

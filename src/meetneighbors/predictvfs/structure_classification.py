@@ -1,4 +1,5 @@
 # for structure
+import os
 import sys
 import subprocess
 import argparse
@@ -10,18 +11,25 @@ from sklearn.preprocessing import StandardScaler # type: ignore
 import time
 import tqdm # type: ignore
 import importlib.resources
+import shutil
 
-def foldseek_search(args):
+def foldseek_search(args,logger):
     # search query's foldseek db against targetdb
     
     foldseek_search_out = "foldseek_search_output" # directory for the foldseek search results
-    subprocess.run(f"mkdir {args.out}{foldseek_search_out}/",shell=True)
+    try:
+        os.mkdir(f"{args.out}{foldseek_search_out}/")
+    except FileExistsError as e:
+        logger.error(e)
+        logger.debug("Removing contents from Foldseeek search then recreating..")
+        shutil.rmtree(args.out + foldseek_search_out) # switched to shutil and os here b/c subprocess wasn't finding directory to remove for whatever reason
+        os.mkdir(args.out + foldseek_search_out)
 
     concat_db = importlib.resources.path("meetneighbors.predictvfs.data.vf_ns_foldseekdb","vfnsconcatdb")
     subprocess.run(f"foldseek search {args.foldseek_structs} {concat_db} {args.out}{foldseek_search_out}/foldseek_search_res {args.out}{foldseek_search_out}/foldseek_tmp --exhaustive-search  --threads {args.threads} -a"
         ,shell=True,check=True)
     
-    subprocess.run(["foldseek", "convertalis", args.foldseek_structs, concat_db, f"{args.out}{foldseek_search_out}/foldseek_search_res", f"{args.out}{foldseek_search_out}/foldseek_search_res.tsv", "--format-output", "query,qheader,target,theader,prob,qlen,alnlen,qstart,pident,qcov,alntmscore,qtmscore,ttmscore,lddt,bits,evalue"])
+    subprocess.run(["foldseek", "convertalis", args.foldseek_structs, concat_db, f"{args.out}{foldseek_search_out}/foldseek_search_res", f"{args.out}{foldseek_search_out}/foldseek_search_res.tsv","--threads", str(args.threads), "--format-output", "query,qheader,target,theader,prob,qlen,alnlen,qstart,pident,qcov,alntmscore,qtmscore,ttmscore,lddt,bits,evalue"])
 
     struct_search_raw = pd.read_csv(f"{args.out}{foldseek_search_out}/foldseek_search_res.tsv",sep="\t", names = ["query","qheader","target","theader","prob","qlen","alnlen","qstart","pident","qcov","alntmscore","qtmscore","ttmscore","lddt","bits","evalue"])
     return struct_search_raw
@@ -132,42 +140,50 @@ def format_searchlabels(search_res):
     search_res.loc[(search_res['tvf_category']=='Exoenzyme') & (search_res['tvf_subcategory']=='non_vf'),'tvf_subcategory'] = search_res.loc[(search_res['tvf_category']=='Exoenzyme') & (search_res['tvf_subcategory']=='non_vf'),'tvf_subcategory']='unknown_Exoenzyme_subcat'
     search_res.loc[(search_res['tvf_category']=='Invasion') & (search_res['tvf_subcategory']=='non_vf'),'tvf_subcategory'] = search_res.loc[(search_res['tvf_category']=='Invasion') & (search_res['tvf_subcategory']=='non_vf'),'tvf_subcategory']='unknown_Invasion_subcat'
 
+    tcat_mask = search_res['tvf_category'] == 'Effector delivery system'
+    search_res.loc[tcat_mask,'tvf_category'] = search_res.loc[tcat_mask,'tvf_subcategory']
+
+    tcat_mask = search_res['tvf_category'] == 'Exoenzyme'
+    search_res.loc[tcat_mask,'tvf_category'] = 'Exotoxin'
+
     # labels in df need to match labels in label binarizer from glm classification
-    search_res['tvf_category'] = search_res['tvf_category'] + ' '
-    search_res['tvf_category'] = search_res['tvf_category'].str.replace('non_vf ','non_vf') # non_vfs don't have an additional space in lb
+    # search_res['tvf_category'] = search_res['tvf_category'] + ' '
+    # search_res['tvf_category'] = search_res['tvf_category'].str.replace('non_vf ','non_vf') # non_vfs don't have an additional space in lb
     return search_res
 
 
-def vfcat_score(allvall_sub_sub,score_metric):
-    # get the top hit for each category based on score_metric
-
-    allvall_sub_sub.reset_index(inplace=True,drop=True)
-
-    tophits = allvall_sub_sub.drop_duplicates(subset=['tvf_category'],keep="first") # take highest struct sim for each cat, sorted from alltophits_probs_threadable()
-
-    vfcat_scores = dict(zip(tophits['tvf_category'],tophits[score_metric]))
-
+def vfcat_score(allvall_sub_sub, score_metric):
+    """Get the top hit for each category based on score_metric"""
+    allvall_sub_sub = allvall_sub_sub.reset_index(drop=True)
+    tophits = allvall_sub_sub.drop_duplicates(subset=['tvf_category'], keep="first")
+    vfcat_scores = dict(zip(tophits['tvf_category'], tophits[score_metric]))
     return vfcat_scores
 
-def alltopNhits_probs_threadable(query_rep,df,score_metric,lb):
-    # return all the cateogry similarities for a given query protein in a numpy array
-
-    df_sub = df[df['query']==query_rep].sort_values(by=score_metric,ascending=False)
-    vfcat_probs = vfcat_score(df_sub,score_metric)
-
+def alltopNhits_probs_groupby(group, score_metric, lb):
+    """Process a single query group - optimized for groupby"""
+    # Sort within the group
+    group_sorted = group.sort_values(by=score_metric, ascending=False) # can probably just sort before groupby
+    
+    # Get category scores
+    vfcat_probs = vfcat_score(group_sorted, score_metric)
+    
+    # Build predictions array
     preds = []
     for vfcat in vfcat_probs:
-        label = lb.transform([vfcat]).astype(np.float64) 
-        label[label>0] = vfcat_probs[vfcat] # manually replace the binarized funcional labels with score_metric
+        label = lb.transform([vfcat]).astype(np.float64)
+        label[label > 0] = vfcat_probs[vfcat]
         preds.append(label[0])
+    
     preds = np.array(preds)
-    preds = np.sum(preds,axis=0) # should be a 1XNumberOfVFcats array
-
+    preds = np.sum(preds, axis=0)
+    
     if np.sum(preds) == 0:
+        query_rep = group['query'].iloc[0]
         print(f"--Getting no structural similarity to db for {query_rep}--")
-    preds = preds/np.sum(preds) # normalize so that they add up to 1, and work for auc
-
-    return [preds,query_rep]
+    else:
+        preds = preds / np.sum(preds)  # normalize
+    
+    return preds
 
 def format_strucpreds(pred_raw,lb):
     # scale structure predictions and to a dataframe, then map back query protein labels
@@ -180,13 +196,13 @@ def format_strucpreds(pred_raw,lb):
     scaler.fit(struct_preds_expanded.values)
     struct_predictions_scaled = scaler.transform(struct_preds_expanded.values)
     struct_predictions_scaled = pd.concat([pd.DataFrame(struct_predictions_scaled),struct_preds.iloc[:,1]],axis=1)
-    print("struct predictions scaled post concat (line 185)", struct_predictions_scaled.head(),flush=True)
+    # print("struct predictions scaled post concat (line 185)", struct_predictions_scaled.head(),flush=True)
     
     # get names of of columns in predictions
     col_names = [cat for cat in lb.classes_]
     col_names.append('query')
     struct_predictions_scaled.columns = col_names
-    print("struct predictions scaled post concat with col names (line 191)", struct_predictions_scaled.head(),flush=True)
+    # print("struct predictions scaled post concat with col names (line 191)", struct_predictions_scaled.head(),flush=True)
     return struct_predictions_scaled
 
 # call spacedust

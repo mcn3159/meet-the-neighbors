@@ -88,11 +88,11 @@ def get_glm_fasta_input(fasta_path,args,glm_input_dir,**kwargs):
         df_name,grp = query_grp[0],query_grp[1]
         fasta = []
         valid_reps = set(grp.rep.values)
-        for rec in fasta_path:
+        for rec in SeqIO.parse(fasta_path,"fasta"):
             rec.id = rec.id.split('|')[-1]
             if rec.id in valid_reps:
                 fasta.append(rec)
-        fasta_outpath = f"{args.out}{glm_input_dir}/{df_name}.fasta"
+        fasta_outpath = f"{glm_input_dir}{df_name}.fasta"
         
     with open(fasta_outpath,"x") as handle: #tsv and fasta files should have the same name
         SeqIO.write(fasta, handle, "fasta")

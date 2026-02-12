@@ -43,6 +43,8 @@ def pull_neighborhoodsdf(args,tmpd,logger):
             file_to_check = f"{args.out}combined.fasta"
         if args.query_fasta: # this resume check doesnt work for prot_genome_pairs and maybe chop-genomes mode. Adjust soon, tired now
             mmseqs_grp_db,mmseqs_search = n.read_search_tsv(input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
+        else:
+            file_to_check = f"{args.out}neighborhoods_db.tsv"
         
     if (args.resume and not os.path.isfile(file_to_check)) or (not args.resume):
         if args.query_fasta:
@@ -66,6 +68,7 @@ def pull_neighborhoodsdf(args,tmpd,logger):
 
         elif args.genomes or args.genome_tsv:
             logger.debug("Chopping up some genomes...")
+            genome_query = True
             if args.genome_tsv: # use if user provides a tsv with paths to genome and protein files, columns must be genome_name, protein path, and gff path
                 args.genome_tsv = pd.read_csv(args.genome_tsv,sep="\t",names=['genome','protein','gff'])
                 firstrow_check = args.genome_tsv.iloc[0]
@@ -92,15 +95,25 @@ def pull_neighborhoodsdf(args,tmpd,logger):
                 neighborhood_db = db.map(n.get_neigborhood,logger,args,tmpd, genome_query = genome_query_db,head_on=args.head_on,intergenic_cutoff=args.intergenic)
                 
             neighborhood_db = neighborhood_db.flatten().compute()
-            neighborhood_db = pd.concat(neighborhood_db)            
+            neighborhood_db = pd.concat(neighborhood_db).drop_duplicates().reset_index(drop=True) # i have no idea why there are duplicates!         
             neighborhood_db.rename(columns={'protein_id':'locus_tag'},inplace=True)
+            neighborhood_db.to_csv(f"{args.out}neighborhoods_db.tsv",sep="\t",index=False)
         else:
             raise Exception("Inputs arguments must include --genomes and --query_fasta, or --genome_tsv, or --prot_genome_pairs")
+    elif args.resume and os.path.isfile(file_to_check) and (not args.query_fasta):
+        logger.debug("Resuming from previous run, loading neighborhood database...")
+        neighborhood_db = dd.read_csv(f"{args.out}neighborhoods_db.tsv",sep="\t").compute()
+
     
     if args.cluster: # need the mmseqs_search object from a query fasta from this work
         logger.debug("Clustering proteins found in all neighborhoods...")
         mm.mmseqs_cluster(args)
         singular_combinedfasta = f"{args.out}combined_fastas_clust_rep.fasta" # to match inputs into glm_input_frm_neighbors.py
+        if not args.query_fasta or args.prot_genome_pairs:
+            rep_prots = list(SeqIO.parse(singular_combinedfasta,'fasta'))
+            for rec in rep_prots:
+                rec.id = rec.id.split('|')[-1] # mmseqs honors the lc after the last |
+            SeqIO.write(rep_prots,open(singular_combinedfasta,'w'),'fasta') 
         mmseqs_clust = f"{args.out}combined_fastas_clust_res.tsv"
         
     else:
@@ -112,7 +125,7 @@ def pull_neighborhoodsdf(args,tmpd,logger):
             combinedfastas = glob.glob(f"{args.out}combined_fasta_partition*")
             genome_query=False
         
-        singular_combinedfasta = f"{args.out}combined.fasta"
+        singular_combinedfasta = f"{args.out}combined.fasta" # this looks broken!!
         with open(singular_combinedfasta,"w") as outfile:
             for fasta in combinedfastas:
                 records = glm.SeqIO.parse(fasta, "fasta")
@@ -127,14 +140,29 @@ def pull_neighborhoodsdf(args,tmpd,logger):
     # b/c we didnt do an initial search all VF centers are the queries for glm input purposes. This will end up creating a lot of glm_inputs
     if args.query_fasta:
         mmseqs_clust = pn.prep_cluster_tsv(mmseqs_clust,logger)
+        logger.debug("Prepped mmseqs clustering results dataframe. Now merging with mmseqs search results...")
         mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search,vfdb=None,removed_neighborhoods=None,logger=logger) # need to fix removed_neighborhoods later
         mmseqs_clust = mmseqs_clust.compute()
         # mmseqs_clust['query'] = mmseqs_clust['VF_center'].copy()
     else:
         mmseqs_clust = pn.prep_cluster_tsv(mmseqs_clust,logger,genome_query=genome_query)
-        mmseqs_clust = pd.merge(mmseqs_clust,neighborhood_db[['locus_tag','start','strand','neighborhood_name']],on='locus_tag',how='right')
+        logger.debug("Prepped mmseqs clustering results dataframe. Now merging with neighborhood db...")
+        neighborhood_db['gff'] = neighborhood_db['neighborhood_name'].str.split('!!!').str[1].copy()
+        neighborhood_db['prot_gffname'] = neighborhood_db['locus_tag'] +'!!!'+ neighborhood_db['gff']
+
+        neighborhood_db['rep'] = neighborhood_db['locus_tag'].map(dict(zip(mmseqs_clust['locus_tag'],mmseqs_clust['rep'])).get) # map rep names from clustering to neighborhood db
+        neighborhood_db['cluster'] = neighborhood_db['locus_tag'].map(dict(zip(mmseqs_clust['locus_tag'],mmseqs_clust['cluster'])).get)
+        mmseqs_clust = neighborhood_db.copy()
+        del neighborhood_db
+        mmseqs_clust['VF_center'] = mmseqs_clust['neighborhood_name'].str.split('!!!').str[0].copy()
+        mmseqs_clust['locus_range'] = mmseqs_clust['neighborhood_name'].str.split('!!!').str[-1].copy()
+
+        mmseqs_clust['query'] = mmseqs_clust.loc[mmseqs_clust['locus_tag']==mmseqs_clust['VF_center'],'VF_center'] # assign query col after or else rep and query mapping gets cooked
+        valcounts_to_check = mmseqs_clust['neighborhood_name'].value_counts()
+        assert max(valcounts_to_check) <= args.max_prots, f"Neighborhoods: {valcounts_to_check[valcounts_to_check > args.max_prots].index.values} are larger than max prots argument. Something may have went wrong with or prior to merge on mmseqs clust and neighborhood db."
+        assert min(valcounts_to_check) >= args.min_prots, f"Protein components of neighborhoods: {valcounts_to_check[valcounts_to_check < args.min_prots].index.values} have been lost."
         mmseqs_clust['locus_tag'] = mmseqs_clust['locus_tag'] + '!!!' + mmseqs_clust['neighborhood_name']
-        mmseqs_clust['query'] = mmseqs_clust['neighborhood_name'].str.split('!!!').str[1]
+        # mmseqs_clust['query'] = mmseqs_clust['neighborhood_name'].str.split('!!!').str[1]
     
     nn_hash = None
     if args.memory_optimize:
@@ -235,28 +263,57 @@ def get_embed_preds(embeds,model_weights,lb,args): # might want to put lb into t
     model = clf.FullyConnectedNN(input_dim=input_dim, num_classes=num_classes).to(device)
     model.load_state_dict(torch.load(model_weights))
     model.eval()
-    with torch.no_grad():
-        outputs = model(torch.tensor(embeds.iloc[:,1:1+1280].values.astype(np.float32)).to(device))
-        ecc_predictions = pd.DataFrame(F.softmax(outputs,dim=1).detach().cpu().numpy())
-            
+    if 'neighborhood_name' in embeds.columns:
+        embed_start_col = 2
+    else: # running in centroids mode
+        embed_start_col = 1
+    if args.memory_optimize:
+        batch_size = int(embeds.shape[0]/ 5)
+        batch_size = max(1,batch_size)
+        all_outputs = []
+        for i in range(0,len(embeds),batch_size):
+            batch = embeds.iloc[i:i+batch_size,embed_start_col:embed_start_col+input_dim]
+            batch = torch.tensor(batch.values.astype(np.float32)).to(device)
+            with torch.no_grad():
+                outputs = model(batch)
+            all_outputs.append(outputs)
+        outputs = torch.cat(all_outputs, dim=0)
+    else:
+        with torch.no_grad():
+            if 'neighborhood_name' in embeds.columns:
+                outputs = model(torch.tensor(embeds.iloc[:,2:2+input_dim].values.astype(np.float32)).to(device)) # iloc starting at 2 b/c of nn column
+            else: # should turn this into an argument to run with centroids
+                outputs = model(torch.tensor(embeds.iloc[:,1:1+input_dim].values.astype(np.float32)).to(device))
+    
+    ecc_predictions = pd.DataFrame(F.softmax(outputs,dim=1).detach().cpu().numpy())
     ecc_predictions.columns = [cat for cat in lb.classes_]
 
-    ecc_predictionsdf = pd.concat([embeds['query'],embeds['neighborhood_name'],ecc_predictions],axis=1)
+    try:
+        if 'neighborhood_name' in embeds.columns:
+            ecc_predictionsdf = pd.concat([embeds['query'],embeds['neighborhood_name'],ecc_predictions],axis=1)
 
-    # So the annotations rarely ever mapped with the code commented out below. Don't think it's worth fixing, was just nice to have annotations in results
-    # map annotations to predictionsdf
-    # prot_annots = {}
-    # prot_faas = [proteome for proteome in glob.glob(args.genomes+'*') if '.gff' not in proteome]
-    # for fasta in prot_faas:
-    #     prot_annots.update({rec.id.split('|')[-1]:' '.join(rec.description.split(' ')[1:]) for rec in SeqIO.parse(fasta,"fasta")})
-    
-    # neighborhoods couldn't be extracted for some queries b/c it didn't fit the minimum neighborhood definition requirements
-    # logger.debug("Number of queries with no neighborhoods:",len(prot_annots)-len(set(embeds['query'])))
-    
-    # ecc_predictionsdf['seq_annotations'] = ecc_predictionsdf['query'].map(prot_annots)
-    
-    new_col_order = ['query', 'neighborhood_name'] + list(lb.classes_)
+            # So the annotations rarely ever mapped with the code commented out below. Don't think it's worth fixing, was just nice to have annotations in results
+            # map annotations to predictionsdf
+            # prot_annots = {}
+            # prot_faas = [proteome for proteome in glob.glob(args.genomes+'*') if '.gff' not in proteome]
+            # for fasta in prot_faas:
+            #     prot_annots.update({rec.id.split('|')[-1]:' '.join(rec.description.split(' ')[1:]) for rec in SeqIO.parse(fasta,"fasta")})
+            
+            # neighborhoods couldn't be extracted for some queries b/c it didn't fit the minimum neighborhood definition requirements
+            # logger.debug("Number of queries with no neighborhoods:",len(prot_annots)-len(set(embeds['query'])))
+            
+            # ecc_predictionsdf['seq_annotations'] = ecc_predictionsdf['query'].map(prot_annots)
+            
+            new_col_order = ['query', 'neighborhood_name'] + list(lb.classes_)
+        else:
+            ecc_predictionsdf = pd.concat([embeds['query'],ecc_predictions],axis=1)
+            new_col_order = ['query'] + list(lb.classes_)
 
-    ecc_predictionsdf = ecc_predictionsdf[new_col_order]
+        ecc_predictionsdf = ecc_predictionsdf[new_col_order]
+    except Exception as e:
+        print("Ran into an error when creating final predictions dataframe, opening console to debug..")
+        print(e)
+        print('lb classes:',lb.classes_)
+        pdb.set_trace()
     
     return ecc_predictionsdf

@@ -1,6 +1,7 @@
 import subprocess
 import os
 import pandas as pd
+import glob
 # script to call mmseqs functions
 
 def mmseqs_createdb(args):
@@ -27,6 +28,18 @@ def mmseqs_cluster(args,glm_inputs=True):
         if (args.resume and not os.path.isfile(f"{args.out}combined_fastas_clust_res.tsv")) or (not args.resume): # don't recreate clus_res.tsv if it already exists
             if isinstance(args.genome_tsv,pd.DataFrame):
                 subprocess.run(f"mmseqs createdb {' '.join(list(args.genome_tsv['protein']))} {args.out}combined_fastas_db -v 2",shell=True,check=True) # should probably put the createdb call in the mmseqs_createdb() function
+            elif args.genomes and not (args.query_fasta or args.prot_genome_pairs):
+                genome_faas = glob.glob(args.genomes+'*.faa')
+                genome_gffs = glob.glob(args.genomes+'*.gff')
+                try:
+                    assert len(genome_faas) == len(genome_gffs), "Number of .faa and .gff files do not match. Trying with .fastas"
+                    protein_file_ending = ".faa"
+                except AssertionError:
+                    genomes_fastas = glob.glob(args.genomes+'*.fasta')
+                    assert len(genomes_fastas) == len(genome_gffs), "Number of .fasta and .gff files do not match. When querying with --genomes make sure all protein files have a .faa ending, or all have a .fasta ending. And the number of protein files match the number of .gff files"
+                    protein_file_ending = ".fasta"
+                subprocess.run(f"mmseqs createdb {args.genomes}*{protein_file_ending} {args.out}combined_fastas_db -v 2",shell=True,check=True) # should probably put the createdb call in the mmseqs_createdb() function
+
             else:
                 subprocess.run(f"mmseqs createdb {args.out}combined_fasta_partition* {args.out}combined_fastas_db -v 2",shell=True,check=True)
             # hard coded some clustering params b/c the goal is to reduce redundant proteins
