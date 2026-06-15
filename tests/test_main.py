@@ -65,7 +65,7 @@ class TestGLMInputValidation:
         mmseqs_nn_rep_d = (
             mmseqs_clust_res.sort_values(by="start")
             .groupby("neighborhood_name")[["rep", "start"]]
-            .apply(lambda x: x.drop_duplicates()["rep"].tolist())
+            .apply(lambda x: x.drop_duplicates(subset='start')["rep"].tolist())
             .to_dict()
         )
         

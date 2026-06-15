@@ -4,7 +4,7 @@
 # found in the LICENSE file in the root directory of this source tree.
 
 # usage: python glm_embed.py -d <batched_data_dir> -m glm.bin -b 1000 -o <output_dir>
-
+# check device
 import torch
 from torch import nn
 from meetneighbors.predictvfs.glm.gLM import *
@@ -48,9 +48,7 @@ def infer(logging, data_dir, model,output_path, device, id_dict, B_SIZE):
     if HALF:
         logging.info("Inference with mixed precision model")
         scaler = torch.cuda.amp.GradScaler()
-    
-    best_layer = 1
-
+    best_layer = 3
     for pkl_f in tqdm(test_pkls, total=len(test_pkls)):
         input_embs = []
         hidden_embs = []
@@ -83,7 +81,7 @@ def infer(logging, data_dir, model,output_path, device, id_dict, B_SIZE):
             labels = labels.to(device)
             input_embs.append(inputs_embeds.cpu().detach().numpy())
             if scaler is not None:
-                with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
+                with torch.amp.autocast(device_type=str(device), dtype=torch.float16):
                     # call model
                     outputs = model(inputs_embeds=inputs_embeds, attention_mask=attention_mask, labels = labels, masked_tokens = masked_tokens, output_attentions = False, output_hidden_states=True)
                     label_embs.append(labels.cpu().detach().numpy().astype(np.float16))
@@ -117,7 +115,6 @@ def infer(logging, data_dir, model,output_path, device, id_dict, B_SIZE):
         assert torch.allclose(torch.tensor(hidden_embs[-1,-1,:]),torch.tensor(hidden_embs2[-1,:])), f"OG Embeding of shape {hidden_embs2.shape} and New Embedding of shape {hidden_embs.shape} did not match. Here are the embeds with OG first: {hidden_embs2[-1,:]} \n ===================== {hidden_embs[-1,-1,:]}"
         hidden_embs = hidden_embs[:,best_layer,:]
         print(f"New embeds after subset for best prediction layer {best_layer}:",hidden_embs.shape)
-        # hidden_embs = np.concatenate(hidden_embs, axis = 0)
         label_embs =  np.concatenate(np.concatenate(label_embs, axis = 0), axis = 0) # remove batch dimension
         output_embs = np.concatenate(output_embs, axis = 0)
 
@@ -127,6 +124,7 @@ def infer(logging, data_dir, model,output_path, device, id_dict, B_SIZE):
         all_probs = all_probs.reshape(x,y,z)
         all_probs =  np.concatenate(all_probs, axis = 0) # remove batch dimension
         all_prot_ids = np.concatenate(np.concatenate(all_prot_ids, axis = 0), axis = 0)
+        print(f"Total prot_ids: {all_prot_ids.shape}")
         all_contacts = np.concatenate(all_contacts, axis =0)
         if id_dict != None:
             ori_prot_ids = get_original_prot_ids(all_prot_ids,id_dict)

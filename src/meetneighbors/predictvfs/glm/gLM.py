@@ -8,11 +8,12 @@ from transformers.models.roberta.modeling_roberta import *
 import torch
 from torch import nn
 from torch.nn import MSELoss
+from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 import torch.utils.checkpoint
 from transformers.utils import ModelOutput
 
-
+@dataclass
 class MultiPredMaskedLMOutput(ModelOutput):
     loss: Optional[torch.FloatTensor] = None
     masked_lm_loss: Optional[torch.FloatTensor] = None
@@ -23,6 +24,16 @@ class MultiPredMaskedLMOutput(ModelOutput):
     logits_closest: torch.FloatTensor = None
     logits_most_likely: torch.FloatTensor = None
     last_hidden_state: Optional[Tuple[torch.FloatTensor]] = None
+    cos_dist: Optional[torch.FloatTensor] = None
+    prediction_mean: Optional[torch.FloatTensor] = None
+    prediction_var: Optional[torch.FloatTensor] = None
+    label_var: Optional[torch.FloatTensor] = None
+    label_mean: Optional[torch.FloatTensor] = None
+    accuracy: Optional[torch.FloatTensor] = None
+    probs: Optional[torch.FloatTensor] = None
+    contacts: Optional[torch.FloatTensor] = None
+    all_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
+    closest_probs: Optional[torch.FloatTensor] = None
 
 
 class gLMMultiHead(nn.Module):
@@ -126,7 +137,7 @@ class gLM_base(RobertaModel):
 
         self.contact_head = ContactPredictionHead(config.num_hidden_layers*config.num_attention_heads)
         # The LM head weights require special treatment only when they are tied with the word embeddings
-        self.update_keys_to_ignore(config, ["lm_head.decoder.weight"])
+        # self.update_keys_to_ignore(config, ["lm_head.decoder.weight"])
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -158,7 +169,7 @@ class gLM_base(RobertaModel):
         kwargs (`Dict[str, any]`, optional, defaults to *{}*):
             Used to hide legacy arguments that have been deprecated.
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = return_dict if return_dict is not None else self.config.return_dict
         
         outputs = self.roberta(
             input_ids,
@@ -371,7 +382,7 @@ class gLM(RobertaModel):
         kwargs (`Dict[str, any]`, optional, defaults to *{}*):
             Used to hide legacy arguments that have been deprecated.
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = return_dict if return_dict is not None else self.config.return_dict
         inputs_embeds = self.dense(inputs_embeds)
         outputs = self.roberta(
             input_ids,

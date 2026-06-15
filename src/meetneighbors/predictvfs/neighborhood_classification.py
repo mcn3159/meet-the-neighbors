@@ -33,6 +33,13 @@ from meetneighbors.predictvfs.glm.gLM import *
 
 import meetneighbors.ring_mmseqs as mm
 
+if torch.cuda.is_available():
+    DEVICE = torch.device('cuda')
+elif torch.backends.mps.is_available():
+    DEVICE = torch.device("mps") # we on mac
+else:
+    DEVICE = torch.device('cpu')
+
 
 def pull_neighborhoodsdf(args,tmpd,logger):
 
@@ -209,6 +216,8 @@ def get_plm_embeds(glm_inputs_path,glm_outputs_path):
     except pkl.PicklingError:
         print("Ran into an error when pickling plm embeddings, opening console to debug..")
         pdb.set_trace()
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
     return
 
 def create_glm_embeds(f,glm_outputs_path,norm_factors,PCA_LABEL,ngpus,bs):
@@ -235,6 +244,7 @@ def create_glm_embeds(f,glm_outputs_path,norm_factors,PCA_LABEL,ngpus,bs):
     NUM_PC_LABEL = 100
      # populate config 
     config = RobertaConfig(
+        vocab_size=30522,
         max_position_embedding = max_seq_length,
         hidden_size = HIDDEN_SIZE,
         num_attention_heads = num_attention_heads,
@@ -249,18 +259,17 @@ def create_glm_embeds(f,glm_outputs_path,norm_factors,PCA_LABEL,ngpus,bs):
         output_hidden_states=True,
         position_embedding_type = pos_emb,
     )
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    print(device,flush=True)
+
+    print(DEVICE,flush=True)
     model = gLM(config)
-    model.load_state_dict(torch.load(glm_model, map_location=device),strict=False)
-    glm_e.run_glm_embeds(model,pkg_data_dir=batched_dir,glm_embed_output_path=f'{glm_outputs_path}/{res_name}/results',device=device,ngpus=ngpus,batch_size=bs)
+    model.load_state_dict(torch.load(glm_model, map_location=DEVICE),strict=False)
+    glm_e.run_glm_embeds(model,pkg_data_dir=batched_dir,glm_embed_output_path=f'{glm_outputs_path}/{res_name}/results',device=DEVICE,ngpus=ngpus,batch_size=bs)
     return f
 
 def get_embed_preds(embeds,model_weights,lb,args): # might want to put lb into the argparse
     input_dim,num_classes = 1280,len(lb.classes_)
 
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    model = clf.FullyConnectedNN(input_dim=input_dim, num_classes=num_classes).to(device)
+    model = clf.FullyConnectedNN(input_dim=input_dim, num_classes=num_classes).to(DEVICE)
     model.load_state_dict(torch.load(model_weights))
     model.eval()
     if 'neighborhood_name' in embeds.columns:
@@ -273,7 +282,7 @@ def get_embed_preds(embeds,model_weights,lb,args): # might want to put lb into t
         all_outputs = []
         for i in range(0,len(embeds),batch_size):
             batch = embeds.iloc[i:i+batch_size,embed_start_col:embed_start_col+input_dim]
-            batch = torch.tensor(batch.values.astype(np.float32)).to(device)
+            batch = torch.tensor(batch.values.astype(np.float32)).to(DEVICE)
             with torch.no_grad():
                 outputs = model(batch)
             all_outputs.append(outputs)
@@ -281,9 +290,9 @@ def get_embed_preds(embeds,model_weights,lb,args): # might want to put lb into t
     else:
         with torch.no_grad():
             if 'neighborhood_name' in embeds.columns:
-                outputs = model(torch.tensor(embeds.iloc[:,2:2+input_dim].values.astype(np.float32)).to(device)) # iloc starting at 2 b/c of nn column
+                outputs = model(torch.tensor(embeds.iloc[:,2:2+input_dim].values.astype(np.float32)).to(DEVICE)) # iloc starting at 2 b/c of nn column
             else: # should turn this into an argument to run with centroids
-                outputs = model(torch.tensor(embeds.iloc[:,1:1+input_dim].values.astype(np.float32)).to(device))
+                outputs = model(torch.tensor(embeds.iloc[:,1:1+input_dim].values.astype(np.float32)).to(DEVICE))
     
     ecc_predictions = pd.DataFrame(F.softmax(outputs,dim=1).detach().cpu().numpy())
     ecc_predictions.columns = [cat for cat in lb.classes_]

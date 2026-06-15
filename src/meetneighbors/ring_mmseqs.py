@@ -17,7 +17,7 @@ def mmseqs_search(args,genomes_db):
         subprocess.run(f"rm {genomes_db}.*",shell=True,check=True) # base db file made from mmseqs is kept b/c if i rm it with the same strategy, I remove the gpu db as well
         subprocess.run(f"mmseqs search {args.out}queryDB {args.out}genomesdb_gpu {args.out}vfs_in_genomes {args.out}tmp_search --min-seq-id {args.seq_id} --cov-mode 0 -c {args.cov} -v 2  --split-memory-limit {int(args.mem * (2/3))}G --alignment-mode 3 --gpu {args.gpu}",shell=True,check=True)
     else:
-        subprocess.run(f"mmseqs search {args.out}queryDB {genomes_db} {args.out}vfs_in_genomes {args.out}tmp_search --min-seq-id {args.seq_id} --cov-mode 0 -c {args.cov} -v 2 --split-memory-limit {int(args.mem * (2/3))}G --threads {args.threads} --alignment-mode 3 --start-sens 1 --sens-steps 3 -s 7",
+        subprocess.run(f"mmseqs search {args.out}queryDB {genomes_db} {args.out}vfs_in_genomes {args.out}tmp_search --min-seq-id {args.seq_id} --cov-mode 0 -c {args.cov} -v 2 --split-memory-limit {int(args.mem * (2/3))}G --threads {int(args.threads * 1.5)} --alignment-mode 3 --start-sens 1 --sens-steps 3 -s 7",
                        shell=True,check=True)
 
     subprocess.run(["mmseqs", "convertalis", f"{args.out}queryDB", genomes_db, f"{args.out}vfs_in_genomes", f"{args.out}vfs_in_genomes.tsv", "--format-output", "query,target,evalue,pident,qcov,fident,alnlen,qheader,theader,tset,tsetid"] 
