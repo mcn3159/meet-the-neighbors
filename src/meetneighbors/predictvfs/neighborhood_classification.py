@@ -270,7 +270,13 @@ def get_embed_preds(embeds,model_weights,lb,args): # might want to put lb into t
     input_dim,num_classes = 1280,len(lb.classes_)
 
     model = clf.FullyConnectedNN(input_dim=input_dim, num_classes=num_classes).to(DEVICE)
-    model.load_state_dict(torch.load(model_weights))
+    # model.load_state_dict(torch.load(model_weights))
+    if hasattr(model_weights, "__enter__"):
+        with model_weights as model_path:
+            state_dict = torch.load(model_path, map_location=DEVICE)
+    else:
+        state_dict = torch.load(model_weights, map_location=DEVICE)
+    model.load_state_dict(state_dict)
     model.eval()
     if 'neighborhood_name' in embeds.columns:
         embed_start_col = 2
