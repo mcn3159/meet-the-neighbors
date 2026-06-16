@@ -5,8 +5,8 @@ import os
 from pathlib import Path
 
 GLM_MODEL_ENV_VAR = "MEETNEIGHBORS_GLM_BIN"
-GLM_MODEL_PACKAGE = "meetneighbors.predictvfs.glm.model"
 GLM_MODEL_FILENAME = "glm.bin"
+GLM_MODEL_REPO_RELATIVE_PATH = Path("src/meetneighbors/predictvfs/glm/model") / GLM_MODEL_FILENAME
 
 def load_vf_functional_mappers():
     # Get the TSV file as a stream
@@ -40,28 +40,26 @@ def get_glm_model_path():
             return model_path
         raise FileNotFoundError(
             f"{GLM_MODEL_ENV_VAR} is set to '{env_path}', but that file does not exist. "
-            f"Set {GLM_MODEL_ENV_VAR} to a valid glm.bin path, or copy glm.bin into "
-            "src/meetneighbors/predictvfs/glm/model/glm.bin before installing."
+            f"Set {GLM_MODEL_ENV_VAR} to a valid glm.bin path, or copy glm.bin to "
+            f"{GLM_MODEL_REPO_RELATIVE_PATH} in the cloned repo."
         )
 
-    try:
-        model_resource = importlib.resources.files(GLM_MODEL_PACKAGE).joinpath(GLM_MODEL_FILENAME)
-    except ModuleNotFoundError as exc:
-        raise FileNotFoundError(
-            "The optional gLM model package directory is missing. Create "
-            "src/meetneighbors/predictvfs/glm/model/, add an __init__.py file, copy "
-            "glm.bin there, then reinstall with `pip install .`. Alternatively set "
-            f"{GLM_MODEL_ENV_VAR}=/path/to/glm.bin."
-        ) from exc
+    for parent in [Path.cwd(), *Path.cwd().parents]:
+        model_path = parent / GLM_MODEL_REPO_RELATIVE_PATH
+        if model_path.is_file():
+            return model_path
 
-    if model_resource.is_file():
-        return Path(model_resource)
+    installed_adjacent_path = Path(__file__).resolve().parent / "glm" / "model" / GLM_MODEL_FILENAME
+    if installed_adjacent_path.is_file():
+        return installed_adjacent_path
 
     raise FileNotFoundError(
-        "Missing gLM model weights: glm.bin. To use `meetneighbors predictvf`, "
-        "copy/download glm.bin to "
-        "src/meetneighbors/predictvfs/glm/model/glm.bin before running `pip install .`, "
-        "then reinstall the package. For editable installs or external model storage, "
-        f"set {GLM_MODEL_ENV_VAR}=/path/to/glm.bin."
+        "Missing gLM model weights: glm.bin. This file is intentionally not "
+        "installed with the package because it is large. To use "
+        "`meetneighbors predictvf`, copy/download glm.bin to "
+        f"{GLM_MODEL_REPO_RELATIVE_PATH} in the cloned repo and run commands "
+        f"from that repo, or set {GLM_MODEL_ENV_VAR}=/path/to/glm.bin. "
+        "If you use the repo-local path or environment variable, `pip install .` "
+        "does not need to be rerun after copying the file."
     )
     
