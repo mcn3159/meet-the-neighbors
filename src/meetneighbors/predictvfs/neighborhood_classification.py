@@ -9,7 +9,6 @@ import pickle as pkl
 from Bio.Seq import MutableSeq
 from Bio.Seq import Seq
 from Bio import SeqIO
-import importlib.resources
 import pdb
 import os
 
@@ -29,6 +28,7 @@ import meetneighbors.predictvfs.clf_models as clf
 import meetneighbors.predictvfs.glm.plm_embed as plm
 import meetneighbors.predictvfs.glm.batch_data as bd
 import meetneighbors.predictvfs.glm.glm_embed as glm_e
+import meetneighbors.predictvfs.loader as loader
 from meetneighbors.predictvfs.glm.gLM import *
 
 import meetneighbors.ring_mmseqs as mm
@@ -223,7 +223,7 @@ def get_plm_embeds(glm_inputs_path,glm_outputs_path):
 def create_glm_embeds(f,glm_outputs_path,norm_factors,PCA_LABEL,ngpus,bs):
     # need to incorporate pkl files from glm (norm and pca.pkl)
     # batch_data_path = importlib.resources.path("meetneighbors.predictvfs.glm","batch_data.py")
-    glm_model = importlib.resources.path("meetneighbors.predictvfs.glm.model","glm.bin")
+    glm_model = loader.get_glm_model_path()
     res_name = f.split('/')[-1] 
     subprocess.run(f"mkdir '{glm_outputs_path}/{res_name}'",shell=True,check=True) #multiple queries with the same name?
     
