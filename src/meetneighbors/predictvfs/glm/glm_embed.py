@@ -93,7 +93,7 @@ def infer(logging, data_dir, model,output_path, device, id_dict, B_SIZE):
 
                          
                     prot_ids = batch['prot_ids']
-                    all_contacts.append(outputs.contacts.cpu().detach().numpy().astype(np.float16))
+                    # all_contacts.append(outputs.contacts.cpu().detach().numpy().astype(np.float16))
                     all_prot_ids.append(prot_ids)
                     logits_all_preds = outputs.logits_all_preds
                     all_preds = logits_all_preds[masked_tokens.squeeze(-1)]
@@ -125,7 +125,7 @@ def infer(logging, data_dir, model,output_path, device, id_dict, B_SIZE):
         all_probs =  np.concatenate(all_probs, axis = 0) # remove batch dimension
         all_prot_ids = np.concatenate(np.concatenate(all_prot_ids, axis = 0), axis = 0)
         print(f"Total prot_ids: {all_prot_ids.shape}")
-        all_contacts = np.concatenate(all_contacts, axis =0)
+        # all_contacts = np.concatenate(all_contacts, axis =0)
         if id_dict != None:
             ori_prot_ids = get_original_prot_ids(all_prot_ids,id_dict)
         else:

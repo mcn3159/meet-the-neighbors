@@ -46,10 +46,12 @@ def get_glm_model_path():
 
     for parent in [Path.cwd(), *Path.cwd().parents]:
         model_path = parent / GLM_MODEL_REPO_RELATIVE_PATH
+        print('='*40,f"Checking for model path with parent loop: {model_path}",'='*40)
         if model_path.is_file():
             return model_path
 
     installed_adjacent_path = Path(__file__).resolve().parent / "glm" / "model" / GLM_MODEL_FILENAME
+    print('='*40,f"Checking for glm model at adjacent relative path: {installed_adjacent_path}",'='*40)
     if installed_adjacent_path.is_file():
         return installed_adjacent_path
 

@@ -10,9 +10,9 @@ class FullyConnectedNN(nn.Module):
     def __init__(self, input_dim, num_classes):
         super(FullyConnectedNN, self).__init__()
         self.fc1 = nn.Linear(input_dim, 256)
-        self.dropout1 = nn.Dropout(0.3)
+        self.dropout1 = nn.Dropout(0.2)
         self.fc2 = nn.Linear(256, 256)
-        self.dropout2 = nn.Dropout(0.3)
+        self.dropout2 = nn.Dropout(0.2)
         self.fc3 = nn.Linear(256, num_classes)
         
     def forward(self, x):
@@ -21,7 +21,7 @@ class FullyConnectedNN(nn.Module):
         x = torch.relu(self.fc2(x))
         x = self.dropout2(x)
         x = self.fc3(x)
-#         x = torch.softmax(self.fc3(x))  # softmax for multilabel classification
+        # x = torch.softmax(self.fc3(x))  # softmax for multilabel classification
         return x
 
     

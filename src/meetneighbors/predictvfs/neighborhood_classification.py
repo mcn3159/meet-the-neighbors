@@ -255,7 +255,7 @@ def create_glm_embeds(f,glm_outputs_path,norm_factors,PCA_LABEL,ngpus,bs):
         num_pred = num_pred,
         predict_probs = pred_probs,
         emb_dim = EMB_DIM,
-        output_attentions=True,
+        output_attentions=False,
         output_hidden_states=True,
         position_embedding_type = pos_emb,
     )
