@@ -220,18 +220,11 @@ def get_plm_embeds(glm_inputs_path,glm_outputs_path):
         torch.distributed.destroy_process_group()
     return
 
-def create_glm_embeds(f,glm_outputs_path,norm_factors,PCA_LABEL,ngpus,bs):
+def create_glm_embeds(f_list,glm_outputs_path,norm_factors,PCA_LABEL,ngpus,bs):
     # need to incorporate pkl files from glm (norm and pca.pkl)
     # batch_data_path = importlib.resources.path("meetneighbors.predictvfs.glm","batch_data.py")
     glm_model = loader.get_glm_model_path()
-    res_name = f.split('/')[-1] 
-    subprocess.run(f"mkdir '{glm_outputs_path}/{res_name}'",shell=True,check=True) #multiple queries with the same name?
     
-    batched_dir = f'{glm_outputs_path}/{res_name}/batched'
-    subprocess.run(f"mkdir {batched_dir}",shell=True,check=True)
-
-    # subprocess.run(f"python {batch_data_path} {glm_outputs_path}/all_glm_input_prots_reps.esm.embs.pkl '{f}'.tsv '{glm_outputs_path}/{res_name}/batched'",shell=True,check=True)
-    bd.run_batcher(f"{glm_outputs_path}/all_glm_input_prots_reps.esm.embs.pkl",f"{f}.tsv",norm_factors,PCA_LABEL,f"{glm_outputs_path}/{res_name}/batched")
     # subprocess.run(f"python {glm_embed_path} -d '{glm_outputs_path}/{res_name}/batched' -m {glm_model} -b 100 -o '{glm_outputs_path}/{res_name}/results'",shell=True,check=True)
     num_pred = 4
     max_seq_length = 30 
@@ -263,8 +256,17 @@ def create_glm_embeds(f,glm_outputs_path,norm_factors,PCA_LABEL,ngpus,bs):
     print(DEVICE,flush=True)
     model = gLM(config)
     model.load_state_dict(torch.load(glm_model, map_location=DEVICE),strict=False)
-    glm_e.run_glm_embeds(model,pkg_data_dir=batched_dir,glm_embed_output_path=f'{glm_outputs_path}/{res_name}/results',device=DEVICE,ngpus=ngpus,batch_size=bs)
-    return f
+    for file_name in f_list:
+        res_name = file_name.split('/')[-1]
+        subprocess.run(f"mkdir '{glm_outputs_path}/{res_name}'",shell=True,check=True) #multiple queries with the same name?
+    
+        batched_dir = f'{glm_outputs_path}/{res_name}/batched'
+        subprocess.run(f"mkdir {batched_dir}",shell=True,check=True)
+
+        # subprocess.run(f"python {batch_data_path} {glm_outputs_path}/all_glm_input_prots_reps.esm.embs.pkl '{f}'.tsv '{glm_outputs_path}/{res_name}/batched'",shell=True,check=True)
+        bd.run_batcher(f"{glm_outputs_path}/all_glm_input_prots_reps.esm.embs.pkl",f"{file_name}.tsv",norm_factors,PCA_LABEL,f"{glm_outputs_path}/{res_name}/batched")
+        glm_e.run_glm_embeds(model,pkg_data_dir=batched_dir,glm_embed_output_path=f'{glm_outputs_path}/{res_name}/results',device=DEVICE,ngpus=ngpus,batch_size=bs)
+    return file_name
 
 def get_embed_preds(embeds,model_weights,lb,args): # might want to put lb into the argparse
     input_dim,num_classes = 1280,len(lb.classes_)

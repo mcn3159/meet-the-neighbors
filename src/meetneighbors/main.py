@@ -336,13 +336,14 @@ def workflow(parser):
 
                 tsvs_to_getembeds = glob.glob(args.out+glm_input_out+"/*.tsv")
                 computed_embed_names = [f.split('/')[-1] for f in glob.glob(args.out+glm_ouputs_out+"/*")] #only keep the query name from split for easier identification
-                # files = [file.split('.tsv')[0] for file in tsvs_to_getembeds if file.split('/')[-1].split('.tsv')[0] not in computed_embed_names] # make sure embed hasnt been computed already
+                files_to_embed = [file.split('.tsv')[0] for file in tsvs_to_getembeds if file.split('/')[-1].split('.tsv')[0] not in computed_embed_names] # make sure embed hasnt been computed already
                 logger.debug(f"Computing gLM embeddings...")
-                res_name = [nc.create_glm_embeds(
-                    file.split('.tsv')[0],args.out+glm_ouputs_out,
+                nc.create_glm_embeds(
+                    files_to_embed,
+                    args.out+glm_ouputs_out,
                     norm_factors=pkl_objs['norm.pkl'],PCA_LABEL=pkl_objs['pca.pkl'],
                     ngpus=args.gpu,bs=args.glm_bs
-                ) for file in tsvs_to_getembeds if file.split('/')[-1].split('.tsv')[0] not in computed_embed_names] # i think using dask is causing the use of a ton of mem, and since prots are already chunked, this should be pretty fast
+                )# i think using dask is causing the use of a ton of mem, and since prots are already chunked, this should be pretty fast
  
             if (args.resume and not os.path.isfile(f'{args.out}glm_embeds.tsv')) or (not args.resume): # load back variables if resuming
                 logger.debug("Organizing gLM embeddings into a pandas dataframe")
