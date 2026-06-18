@@ -238,8 +238,10 @@ def workflow(parser):
             glm_input_out,glm_input2_out,glm_ouputs_out = "glm_inputs","glm_input2_out/","glm_outputs" # slashes and non slashes done purposefuly
             if (args.resume and len(glob.glob(args.out+glm_ouputs_out+'/**/results/results/batch.pkl.glm.embs.pkl'))*2 != len(glob.glob(args.out+glm_input_out+'/*'))) or (not args.resume) or (len(glob.glob(args.out+glm_input_out+'/*'))==0):
                 cluster_neighborhoods_by = "query"
-                if not (args.query_fasta or args.prot_genome_pairs):
+                if (not args.query_fasta or args.prot_genome_pairs) and (args.mem > 16): # this will compute embeds for the whole gff at once. So if mem small chunk by query intead
                     cluster_neighborhoods_by = "gff"
+                logger.debug(f"Clustering neighborhoods by {cluster_neighborhoods_by}")
+                    
                 logger.debug("Creating groups of neighborhoods by their originial query")
                 mmseqs_clust['start'] = mmseqs_clust['start'].astype(int) # fixes issue with order of prots in glminputs being jumbled b/c of string sorting of start positions
                 mmseqs_clust_nolink_groups = pn.get_query_neighborhood_groups(mmseqs_clust,cluster_neighborhoods_by)
@@ -271,14 +273,14 @@ def workflow(parser):
                 if args.memory_optimize:
                     # belove should be a function..
                     mmseqs_clust_mem = mmseqs_clust.memory_usage(deep=True).sum() / 10**8 # get mmseqs clust memory interms of GB 
-                    its = 1
+                    its,min_chunks = 1,5 # try adjusting this if running into mem issues
                     qs_for_glm = np.array(list(uniq_neighborhoods_d.keys()))
                     while (mmseqs_clust_mem/its) * args.threads > args.mem:
                         its+=1
                     if its > 1 and (its < len(qs_for_glm)): # this means the mmseqs_clust is large for just a few queries relative to mem
-                        its+= min(10, len(qs_for_glm) - its) # creating more chunks for faster processing, also to avoid the case where the number of chunks is greater than the number of queries, which would cause an empty array in np.array_split
+                        its+= min(min_chunks, len(qs_for_glm) - its) # creating more chunks for faster processing, also to avoid the case where the number of chunks is greater than the number of queries, which would cause an empty array in np.array_split
                     elif its == 1:
-                        its = min(10, len(qs_for_glm)) # if the df is small enough to fit into mem, just split it into 10 chunks for faster processing
+                        its = min(min_chunks, len(qs_for_glm)) # if the df is small enough to fit into mem, just split it into 10 chunks for faster processing
                     elif its > (len(qs_for_glm)): # make sure we're not using more its than queries or else there will be empty arrays in qs_for_glm (post array split)
                         its = len(qs_for_glm)
                     logger.debug(f"Splitting mmseqs clustering df into {its} chunks...")
@@ -298,21 +300,15 @@ def workflow(parser):
                                 logger=logger,args=args).compute()
 
                         protids = set(mmseqs_clust_sub['rep'])
-                        if args.query_fasta or args.prot_genome_pairs: # for only query_fasta and prot_genome_pairs here b/c predicting from genomes already runs pretty fast
+                        # for only query_fasta and prot_genome_pairs here b/c predicting from genomes already runs pretty fast
+                        # or run if mem is really low in genome mode
+                        if (args.query_fasta or args.prot_genome_pairs) or (args.mem < 16): 
                             glm.get_glm_fasta_input(fasta_path=singular_combinedfasta,
                                                     glm_input_dir = args.out + glm_input2_out,
                                                     protids = protids, 
                                                     args=args,it = i)
-                            glm.concat_tsv_fastas(args.out + glm_input_out, args.out + glm_input2_out, chunk=chunk, i = i)
-                            
-                        #     query_db = list(mmseqs_clust_sub.groupby('query'))
-                        #     query_db = db.from_sequence(query_db,npartitions=args.threads)
-                        #     singular_combinedfasta_l = glm.SeqIO.parse(singular_combinedfasta,'fasta')
-                        #     singular_combinedfasta_l = list(filter(lambda x: x.id.split('|')[-1] in protids,singular_combinedfasta_l))
-                        #     db.map(glm.get_glm_fasta_input,fasta_path=singular_combinedfasta_l,
-                        #                             glm_input_dir=f"{args.out}glm_input/",
-                        #                             query_grp = query_db,
-                        #                             args=args).compute()
+                            glm.concat_tsv_fastas(args.out + glm_input_out, args.out + glm_input2_out, chunk=chunk, i = i)                           
+
                         del mmseqs_clust_sub
                     
                 else:
@@ -320,7 +316,7 @@ def workflow(parser):
                     db.map(glm.get_glm_input,query=query_db,mmseqs_clust=mmseqs_clust,combinedfasta=singular_combinedfasta,glm_input_dir=glm_input_out,uniq_neighborhoods_d=uniq_neighborhoods_d,
                             logger=logger,args=args).compute() # needs to be adjusted for get_glm_fasta_input(), and modified get_glm_input                        
 
-                if args.query_fasta or args.prot_genome_pairs: # for only query_fasta and prot_genome_pairs here b/c predicting from genomes already runs pretty fast
+                if args.query_fasta or args.prot_genome_pairs or args.mem < 16: # for only query_fasta and prot_genome_pairs here b/c predicting from genomes already runs pretty fast
                         shutil.rmtree(args.out + glm_input_out) # remove originial glm_inputs dir to save file space
                         shutil.move(args.out + glm_input2_out, args.out + glm_input_out)
                 else: # don't neeed glm_input2_out for genomes mode
