@@ -273,7 +273,7 @@ def workflow(parser):
                 if args.memory_optimize:
                     # belove should be a function..
                     mmseqs_clust_mem = mmseqs_clust.memory_usage(deep=True).sum() / 10**8 # get mmseqs clust memory interms of GB 
-                    its,min_chunks = 1,5 # try adjusting this if running into mem issues
+                    its,min_chunks = 1,7 # try adjusting this if running into mem issues
                     qs_for_glm = np.array(list(uniq_neighborhoods_d.keys()))
                     while (mmseqs_clust_mem/its) * args.threads > args.mem:
                         its+=1

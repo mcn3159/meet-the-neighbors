@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>CGView GFF3 test</title>
+
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cgview/dist/cgview.css">
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cgview/dist/cgview.min.js"></script>
+
+  <style>
+    #my-viewer {
+      width: 900px;
+      height: 900px;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="my-viewer"></div>
+
+  <script>
+    const GFF_FILE = "__GFF_FILE__";
+
+    // Set to null to include all non-excluded feature types.
+    // Or use, for example: new Set(["CDS", "tRNA", "rRNA"])
+    const INCLUDE_TYPES = null;
+
+    // These are usually redundant on CGView maps.
+    const EXCLUDE_TYPES = new Set(["region", "gene", "exon", "source","pseudogene","riboswitch","RNase_P_RNA",
+    "antisense_RNA","SRP_RNA","ncRNA","tRNA","rRNA","tmRNA","sequence_feature"]);
+
+    const TYPE_COLORS = {
+      CDS: "rgba(0,0,153,0.5)",
+      // tRNA: "rgba(153,0,153,0.5)",
+      // rRNA: "rgba(0,153,53,0.5)",
+      // pseudogene: "rgba(180,120,40,0.5)",
+      // riboswitch: "rgba(60,150,210,0.5)",
+      // tmRNA: "rgba(210,90,60,0.5)",
+      // RNase_P_RNA: "rgba(80,160,120,0.5)"
+    };
+
+    function decodeGffValue(value) {
+      try {
+        return decodeURIComponent(value.replace(/\+/g, "%20"));
+      } catch {
+        return value;
+      }
+    }
+
+    function parseAttributes(attrText) {
+      const attrs = {};
+
+      if (!attrText || attrText === ".") {
+        return attrs;
+      }
+
+      for (const part of attrText.split(";")) {
+        if (!part) continue;
+
+        const equalIndex = part.indexOf("=");
+        if (equalIndex === -1) continue;
+
+        const key = part.slice(0, equalIndex);
+        const value = part.slice(equalIndex + 1);
+
+        attrs[key] = decodeGffValue(value);
+      }
+
+      return attrs;
+    }
+
+    function getFeatureName(attrs, type) {
+      return (
+        attrs.gene ||
+        attrs.Name ||
+        attrs.locus_tag ||
+        attrs.product ||
+        attrs.ID ||
+        type
+      );
+    }
+
+    function parseGff3(gffText) {
+      const contigLengths = {};
+      const contigOrder = [];
+      const rawFeatures = [];
+
+      for (const line of gffText.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+
+        const regionMatch = line.match(/^##sequence-region\s+(\S+)\s+(\d+)\s+(\d+)/);
+        if (regionMatch) {
+          const contig = regionMatch[1];
+          const start = Number(regionMatch[2]);
+          const stop = Number(regionMatch[3]);
+          const length = stop - start + 1;
+
+          if (!contigLengths[contig]) {
+            contigOrder.push(contig);
+          }
+
+          contigLengths[contig] = length;
+          continue;
+        }
+
+        if (line.startsWith("#")) continue;
+
+        const fields = line.split("\t");
+        if (fields.length < 9) continue;
+
+        const contig = fields[0];
+        const source = fields[1];
+        const type = fields[2];
+        const start = Number(fields[3]);
+        const stop = Number(fields[4]);
+        const strandText = fields[6];
+        const attrs = parseAttributes(fields[8]);
+
+        if (!Number.isFinite(start) || !Number.isFinite(stop)) continue;
+
+        if (!contigLengths[contig]) {
+          contigLengths[contig] = Math.max(contigLengths[contig] || 0, start, stop);
+          if (!contigOrder.includes(contig)) {
+            contigOrder.push(contig);
+          }
+        }
+
+        rawFeatures.push({
+          contig,
+          source,
+          type,
+          start,
+          stop,
+          strand: strandText === "-" ? -1 : 1,
+          name: getFeatureName(attrs, type),
+          qualifiers: attrs
+        });
+      }
+
+      let offset = 0;
+      const contigOffsets = {};
+
+      for (const contig of contigOrder) {
+        contigOffsets[contig] = offset;
+        offset += contigLengths[contig];
+      }
+
+      const sequenceLength = offset;
+
+      if (!sequenceLength) {
+        throw new Error("Could not determine sequence length from the GFF3 file.");
+      }
+
+      const features = rawFeatures
+        .filter(f => !EXCLUDE_TYPES.has(f.type))
+        .filter(f => INCLUDE_TYPES === null || INCLUDE_TYPES.has(f.type))
+        .map(f => {
+          return {
+            name: f.name,
+            type: f.type,
+            start: contigOffsets[f.contig] + f.start,
+            stop: contigOffsets[f.contig] + f.stop,
+            strand: f.strand,
+            source: "gff-features",
+            legend: f.type,
+            qualifiers: f.qualifiers
+          };
+        });
+
+      const featureTypes = [...new Set(features.map(f => f.type))].sort();
+
+      return {
+        sequenceLength,
+        contigLengths,
+        contigOrder,
+        contigOffsets,
+        rawFeatures,
+        features,
+        featureTypes
+      };
+    }
+
+    function makeLegendItems(featureTypes) {
+      return featureTypes.map(type => {
+        return {
+          name: type,
+          swatchColor: TYPE_COLORS[type] || "rgba(120,120,120,0.5)",
+          decoration: "arrow"
+        };
+      });
+    }
+
+    Promise.all([
+      fetch(GFF_FILE).then(response => {
+        if (!response.ok) {
+          throw new Error(`Could not load ${GFF_FILE}: HTTP ${response.status}`);
+        }
+        return response.text();
+      }),
+      fetch("lc_vfprediction.json").then(response => {
+        if (!response.ok) {
+          throw new Error(`Could not load category_by_locus_tag.json: HTTP ${response.status}`);
+        }
+        return response.json();
+      })
+    ])
+      .then(([gffText, categoryByLocusTag]) => {
+        const parsed = parseGff3(gffText);
+
+        const categoryFeatures = parsed.rawFeatures
+          .filter(f => f.type === "CDS")
+          .filter(f => {
+            const locusTag = f.qualifiers.locus_tag;
+            return locusTag && categoryByLocusTag[locusTag];
+          })
+          .map(f => {
+            const locusTag = f.qualifiers.locus_tag;
+            const category = categoryByLocusTag[locusTag];
+
+            return {
+              name: f.name,
+              type: f.type,
+              start: parsed.contigOffsets[f.contig] + f.start,
+              stop: parsed.contigOffsets[f.contig] + f.stop,
+              strand: f.strand,
+              source: "category-features",
+              legend: category,
+              qualifiers: {
+                ...f.qualifiers,
+                category: category
+              }
+            };
+          });
+
+        const CATEGORY_COLORS = {
+          "Adherence": "rgba(31, 119, 180, 0.75)",
+          "Invasion": "rgba(255, 127, 14, 0.75)",
+          "Exotoxin": "rgba(214, 39, 40, 0.75)",
+          "Immune modulation": "rgba(148, 103, 189, 0.75)",
+          "Type II secretion system (T2SS)": "rgba(44, 160, 44, 0.75)",
+          "Type III secretion system (T3SS)": "rgba(140, 86, 75, 0.75)",
+          "Type IV secretion system (T4SS)": "rgba(227, 119, 194, 0.75)",
+          "Type V secretion system (T5SS)": "rgba(127, 127, 127, 0.75)",
+          "Type VI secretion system (T6SS)": "rgba(188, 189, 34, 0.75)",
+          "Motility": "rgba(23, 190, 207, 0.75)",
+          "Other": "rgba(100, 100, 100, 0.75)"
+        };
+
+        const categories = [...new Set(categoryFeatures.map(f => f.legend))].sort();
+
+        console.log("sequence length:", parsed.sequenceLength);
+        console.log("category features:", categoryFeatures.length);
+        console.log("categories:", categories);
+
+        const cgv = new CGView.Viewer("#my-viewer", {
+          height: 900,
+          width: 900,
+          sequence: {
+            length: parsed.sequenceLength
+          }
+        });
+
+        const typeLegendItems = makeLegendItems(parsed.featureTypes);
+
+const categoryLegendItems = categories.map(category => ({
+  name: category,
+  swatchColor: CATEGORY_COLORS[category] || "rgba(100,100,100,0.75)",
+  decoration: "arrow"
+}));
+
+cgv.io.loadJSON({
+  cgview: {
+    version: "1.7.0",
+    settings: {
+      backgroundColor: "white",
+      showShading: true,
+      arrowHeadLength: 0.3
+    },
+    ruler: {
+      font: "sans-serif, plain, 10",
+      color: "black"
+    },
+    legend: {
+      position: "top-right",
+      defaultFont: "sans-serif, plain, 14",
+      items: typeLegendItems.concat(categoryLegendItems)
+    },
+    tracks: [
+      {
+        name: "GFF features",
+        separateFeaturesBy: "strand",
+        position: "both",
+        dataType: "feature",
+        dataMethod: "source",
+        dataKeys: "gff-features"
+      },
+      {
+        name: "Virulence / category features",
+        separateFeaturesBy: "strand",
+        position: "outside",
+        dataType: "feature",
+        dataMethod: "source",
+        dataKeys: "category-features"
+      }
+    ],
+    sequence: {
+      length: parsed.sequenceLength
+    },
+    features: parsed.features.concat(categoryFeatures)
+  }
+});
+
+        cgv.draw();
+      })
+      .catch(error => {
+        console.error(error);
+        document.body.insertAdjacentHTML(
+          "beforeend",
+          `<pre style="color:red; white-space: pre-wrap;">${error.message}</pre>`
+        );
+      });
+  </script>
+</body>
+</html>

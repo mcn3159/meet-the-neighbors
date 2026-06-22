@@ -64,6 +64,13 @@ dependencies = [
     "typing-extensions>=4.3.0",
 ]
 
+colab = [
+    "numpy>=2.0",
+    "pandas>=2.2.2",
+    "scipy>=1.13",
+    "scikit-learn>=1.4.2",
+]
+
 [project.scripts]
 meetneighbors = "meetneighbors.main:run"
 
