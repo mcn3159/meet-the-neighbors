@@ -64,6 +64,7 @@ dependencies = [
     "typing-extensions>=4.3.0",
 ]
 
+[project.optional-dependencies]
 colab = [
     "numpy>=2.0",
     "pandas>=2.2.2",
