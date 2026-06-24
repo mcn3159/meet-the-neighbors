@@ -20,7 +20,9 @@
   <div id="my-viewer"></div>
 
   <script>
-    const GFF_FILE = "__GFF_FILE__";
+    const GFF_FILENAME = "__GFF_FILENAME__";
+    const GFF_TEXT_B64 = "__GFF_TEXT_B64__";
+    const CATEGORY_BY_LOCUS_TAG = __CATEGORY_BY_LOCUS_TAG_JSON__;
 
     // Set to null to include all non-excluded feature types.
     // Or use, for example: new Set(["CDS", "tRNA", "rRNA"])
@@ -191,21 +193,12 @@
       });
     }
 
-    Promise.all([
-      fetch(GFF_FILE).then(response => {
-        if (!response.ok) {
-          throw new Error(`Could not load ${GFF_FILE}: HTTP ${response.status}`);
-        }
-        return response.text();
-      }),
-      fetch("lc_vfprediction.json").then(response => {
-        if (!response.ok) {
-          throw new Error(`Could not load category_by_locus_tag.json: HTTP ${response.status}`);
-        }
-        return response.json();
-      })
-    ])
-      .then(([gffText, categoryByLocusTag]) => {
+    try {
+        const gffText = new TextDecoder().decode(
+          Uint8Array.from(atob(GFF_TEXT_B64), c => c.charCodeAt(0))
+        );
+
+        const categoryByLocusTag = CATEGORY_BY_LOCUS_TAG;
         const parsed = parseGff3(gffText);
 
         const categoryFeatures = parsed.rawFeatures
@@ -312,14 +305,13 @@ cgv.io.loadJSON({
 });
 
         cgv.draw();
-      })
-      .catch(error => {
-        console.error(error);
-        document.body.insertAdjacentHTML(
-          "beforeend",
-          `<pre style="color:red; white-space: pre-wrap;">${error.message}</pre>`
-        );
-      });
+      } catch (error) {
+      console.error(error);
+      document.body.insertAdjacentHTML(
+        "beforeend",
+        `<pre style="color:red; white-space: pre-wrap;">${error.message}</pre>`
+      );
+}
   </script>
 </body>
 </html>
