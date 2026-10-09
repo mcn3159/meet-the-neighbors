@@ -2,12 +2,7 @@ import subprocess
 import argparse
 import os
 import shutil
-import numpy as np
-import pandas as pd
 import warnings
-import dask # type: ignore
-import dask.bag as db # type: ignore
-import dask.dataframe as dd # type: ignore
 import time
 import pickle as pkl
 import glob
@@ -15,19 +10,6 @@ import logging
 import tempfile
 import sys
 # from dask.distributed import Client
-
-
-import meetneighbors.neighbors_frm_mmseqs as n
-import meetneighbors.plot_map_neighborhood_res as pn
-import meetneighbors.compare_neighborhoods as c
-import meetneighbors.glm_input_frm_neighbors as glm
-import meetneighbors.compute_umap as cu
-import meetneighbors.ring_mmseqs as mm
-
-from meetneighbors.predictvfs import neighborhood_classification as nc
-from meetneighbors.predictvfs import structure_classification as sc
-from meetneighbors.predictvfs import clf_models as clf
-from meetneighbors.predictvfs import loader as l
 
 
 def get_parser():
@@ -55,6 +37,17 @@ def get_parser():
     parser = argparse.ArgumentParser("neighbors",argument_default=argparse.SUPPRESS,description="Meet-the-neighbors extracts and analyzes genomic neighborhoods and runs analyses from protein fastas and their respective gffs",epilog="Madu Nzerem 2023")
     subparsers = parser.add_subparsers(help='Sub-command options',dest="subcommand")
     subparsers.required = True  # Make subcommand required
+
+    context_only = subparsers.add_parser(
+        "context_only", help="Compute layer-9 context-only embeddings for neighborhood centers")
+    context_only.add_argument("--input-dir", required=True,
+                              help="Directory containing glm_inputs/ and glm_outputs/ with the ESM pickle")
+    context_only.add_argument("--out", "-o", required=True, help="Output directory")
+    context_only.add_argument("--glm_bs", type=int, default=100, help="GLM batch size (default: 100)")
+    context_only.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto",
+                              help="auto selects CUDA when available, otherwise CPU")
+    context_only.add_argument("--input-mode", choices=["masked", "original"], default="masked",
+                              help="masked: notebook outputs with center _masked suffix; original: unmodified inputs")
 
     extract_neighbors = subparsers.add_parser("extract_neighbors",parents=[parent_parser],help="Extract neighborhoods from fastas/gffs")
     extract_neighbors.add_argument("--test_fastas", type=str, required=False, default=None, help="Run with test fastas?")
@@ -134,6 +127,40 @@ def get_logger(subcommand,out):
 def workflow(parser):
     start_time = time.time()
     args = parser.parse_args()
+    if args.subcommand == "context_only":
+        from pathlib import Path
+        from meetneighbors.context_only import run_context_only
+
+        if args.glm_bs < 1:
+            parser.error("--glm_bs must be a positive integer")
+        args.out = str(Path(args.out).expanduser())
+        os.makedirs(args.out, exist_ok=True)
+        logger = get_logger(args.subcommand, os.path.join(args.out, ""))
+        try:
+            run_context_only(args.input_dir, args.out, args.glm_bs, args.device,
+                             args.input_mode, logger=logger)
+        except (ValueError, OSError) as exc:
+            parser.error(str(exc))
+        logger.debug("Done! Took %.2f seconds", time.time() - start_time)
+        return
+
+    # Load the extraction/classification dependencies only for their workflows.
+    import numpy as np
+    import pandas as pd
+    import dask
+    import dask.bag as db
+    import dask.dataframe as dd
+    import meetneighbors.neighbors_frm_mmseqs as n
+    import meetneighbors.plot_map_neighborhood_res as pn
+    import meetneighbors.compare_neighborhoods as c
+    import meetneighbors.glm_input_frm_neighbors as glm
+    import meetneighbors.compute_umap as cu
+    import meetneighbors.ring_mmseqs as mm
+    from meetneighbors.predictvfs import neighborhood_classification as nc
+    from meetneighbors.predictvfs import structure_classification as sc
+    from meetneighbors.predictvfs import clf_models as clf
+    from meetneighbors.predictvfs import loader as l
+
     # client = Client(host='localhost',memory_limit=str(int(args.mem/args.threads))+"Gib")
     dirs_l = check_dirs(args.out)
     args.out = dirs_l[0]
@@ -479,4 +506,3 @@ def run():
     parser = get_parser()
     workflow(parser)
     quit()
-
