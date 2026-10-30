@@ -38,11 +38,32 @@ def get_parser():
     subparsers = parser.add_subparsers(help='Sub-command options',dest="subcommand")
     subparsers.required = True  # Make subcommand required
 
+    viz = subparsers.add_parser("viz_neighborhoods", help="Visualize extracted neighborhoods in an interactive offline HTML report")
+    viz.add_argument("--input-dir", required=True, help="Existing extract_neighbors output directory")
+    viz.add_argument("--out", "-o", required=True, help="Directory for neighborhoods.html")
+    viz.add_argument("--neighborhood-names", "--neighborhood_names", nargs="+", help="One or more exact neighborhood names")
+    viz.add_argument("--n-random", type=int, default=None, help="Additional random neighborhoods (default: 10 without names, otherwise 0)")
+    viz.add_argument("--seed", type=int, default=None, help="Random sampling seed")
+    viz_sources = viz.add_mutually_exclusive_group(required=True)
+    viz_sources.add_argument("--genomes", "-g", help="Directory containing original GFFs and protein FASTAs")
+    viz_sources.add_argument("--genome_tsv", "--genome-tsv", help="Headerless TSV: genome name, protein FASTA, GFF; paths relative to TSV")
+    viz.add_argument("--recluster", action="store_true", help="Recluster proteins from selected neighborhoods with MMseqs2")
+    viz.add_argument("--cluster-dir", help="New reclustering directory (default: OUT/recluster)")
+    viz.add_argument("--seq-id", "--seq_id", type=float, default=0.90, help="Reclustering minimum sequence identity, fraction (default: 0.90)")
+    viz.add_argument("--cov", type=float, default=0.90, help="Reclustering coverage, fraction (default: 0.90)")
+    viz.add_argument("--cov-mode", type=int, choices=range(6), default=0, help="MMseqs2 coverage mode (default: 0)")
+    viz.add_argument("--sensitivity", type=float, default=None, help="MMseqs2 sensitivity; defaults to MMseqs2 automatic selection")
+    viz.add_argument("--cluster-mode", type=int, choices=range(4), default=None, help="MMseqs2 cluster mode; defaults to MMseqs2 selection")
+    viz.add_argument("--threads", type=int, default=4)
+    viz.add_argument("--mem", type=float, default=8, help="MMseqs2 split-memory limit in GB (default: 8)")
+
     context_only = subparsers.add_parser(
         "context_only", help="Compute layer-9 context-only embeddings for neighborhood centers")
     context_only.add_argument("--input-dir", required=True,
                               help="Directory containing glm_inputs/ and glm_outputs/ with the ESM pickle")
     context_only.add_argument("--out", "-o", required=True, help="Output directory")
+    context_only.add_argument("--neighborhood-run", default=None,
+                              help="Original MTN run with GLM labels/hash mapping (default: discover from input ancestors)")
     context_only.add_argument("--glm_bs", type=int, default=100, help="GLM batch size (default: 100)")
     context_only.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto",
                               help="auto selects CUDA when available, otherwise CPU")
@@ -127,6 +148,18 @@ def get_logger(subcommand,out):
 def workflow(parser):
     start_time = time.time()
     args = parser.parse_args()
+    if args.subcommand == "viz_neighborhoods":
+        from meetneighbors.viz_neighborhoods import viz_neighborhoods
+
+        options = vars(args).copy()
+        options.pop("subcommand")
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
+        try:
+            result = viz_neighborhoods(**options)
+        except (ValueError, OSError) as exc:
+            parser.error(str(exc))
+        print(result)
+        return
     if args.subcommand == "context_only":
         from pathlib import Path
         from meetneighbors.context_only import run_context_only
@@ -138,7 +171,7 @@ def workflow(parser):
         logger = get_logger(args.subcommand, os.path.join(args.out, ""))
         try:
             run_context_only(args.input_dir, args.out, args.glm_bs, args.device,
-                             args.input_mode, logger=logger)
+                             args.input_mode, logger=logger, neighborhood_run=args.neighborhood_run)
         except (ValueError, OSError) as exc:
             parser.error(str(exc))
         logger.debug("Done! Took %.2f seconds", time.time() - start_time)

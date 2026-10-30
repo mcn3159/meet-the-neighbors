@@ -138,11 +138,12 @@ class ContextOnlyTests(unittest.TestCase):
             with result.open() as handle:
                 table = list(csv.reader(handle, delimiter="\t"))
             self.assertEqual(calls, [2, 1])
-            self.assertEqual(len(table[0]), 1284)
+            self.assertEqual(len(table[0]), 1285)
             self.assertEqual([row[:4] for row in table[1:]], [
                 ["a.tsv", "1", "first", "A"], ["a.tsv", "2", "second", "B"],
                 ["z.tsv", "1", "last", "A"]])
-            self.assertEqual([float(row[4]) for row in table[1:]], [0, 1, 1])
+            self.assertEqual([row[4] for row in table[1:]], ["a", "a", "z"])
+            self.assertEqual([float(row[5]) for row in table[1:]], [0, 1, 1])
             with self.assertRaises(FileExistsError):
                 co.run_context_only(self.root, out)
 
@@ -183,12 +184,13 @@ class ContextOnlyTests(unittest.TestCase):
                 parser.parse_args(["context_only", "--help"])
             self.assertEqual(exc.exception.code, 0)
             self.assertIn("--input-dir", stdout.getvalue())
+            self.assertIn("--neighborhood-run", stdout.getvalue())
         with patch("sys.argv", ["meetneighbors", *args]), \
                 patch("meetneighbors.main.get_logger") as logger, \
                 patch.object(co, "run_context_only") as run:
             workflow(parser)
             run.assert_called_once_with(str(self.root), str(self.root / "out"), 100,
-                                        "auto", "masked", logger=logger.return_value)
+                                        "auto", "masked", logger=logger.return_value, neighborhood_run=None)
 
     def test_device_selection_and_invalid_batch_size(self):
         with patch("torch.cuda.is_available", return_value=False):

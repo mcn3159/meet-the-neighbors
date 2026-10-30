@@ -1,12 +1,15 @@
 """Center-only GLM embeddings with raw ESM masking before normalization."""
 
 import csv
+from contextlib import closing
 from dataclasses import dataclass
+import hashlib
 from importlib import resources
 from itertools import islice
 import logging
 from pathlib import Path
 import pickle
+import tempfile
 
 import numpy as np
 import torch
@@ -170,7 +173,22 @@ def embed_centers(model, inputs, attention, rows, device):
     return vectors
 
 
-def run_context_only(input_dir, out, batch_size=100, device="auto", input_mode="masked", logger=None):
+def context_signature(inputs, attention, center_index):
+    """Identity of the actual staged model input and extracted occurrence.
+
+    The center's original ID and query label are intentionally absent. Include
+    strands, padding, and the attention mask rather than using the legacy hash.
+    """
+    digest = hashlib.sha256(np.asarray(inputs, dtype="<f2").tobytes())
+    digest.update(np.asarray(attention, dtype=np.uint8).tobytes())
+    digest.update(int(center_index).to_bytes(2, "little"))
+    return digest.digest()
+
+
+def run_context_only(input_dir, out, batch_size=100, device="auto", input_mode="masked", logger=None,
+                     neighborhood_run=None):
+    from .context_mapping import ContextIndex, find_neighborhood_run
+
     logger = logger or logging.getLogger(__name__)
     if batch_size < 1:
         raise ValueError("--glm_bs must be a positive integer")
@@ -184,35 +202,67 @@ def run_context_only(input_dir, out, batch_size=100, device="auto", input_mode="
     if not paths:
         raise ValueError(f"No input TSVs found in {input_dir / 'glm_inputs'}")
     device = select_device(device)
-    embeddings = load_esm_embeddings(input_dir / "glm_outputs" / ESM_FILENAME)
-    mean, std = load_normalization()
-
-    # Validate every row before loading the large model or creating a result file.
-    count = 0
-    for row in iter_neighborhoods(paths, input_mode):
-        prepare_batch([row], embeddings, mean, std)
-        count += 1
-    if not count:
-        raise ValueError("Input TSVs contain no neighborhoods")
-    logger.info("Embedding %d centers from %d files on %s (layer %d)", count, len(paths), device, LAYER)
-    model = load_model(device)
+    run = find_neighborhood_run(input_dir, neighborhood_run)
+    logger.info("Mapping GLM labels from %s", run)
     out.mkdir(parents=True, exist_ok=True)
-    # Exclusive creation protects existing results. Remove our partial file on failure.
-    with output.open("x", newline="") as handle:
-        try:
-            writer = csv.writer(handle, delimiter="\t")
-            writer.writerow(["source_file", "source_row", "neighborhood_name", "rep", *range(ESM_DIM)])
-            iterator = iter_neighborhoods(paths, input_mode)
+    with tempfile.TemporaryDirectory(prefix=".context_only_", dir=out) as temp:
+        with closing(ContextIndex(Path(temp) / "mapping.sqlite")) as index:
+            index.add_inputs(iter_neighborhoods(paths, input_mode), input_mode)
+            logger.info("Indexing saved neighborhood hashes and GLM label metadata")
+            hashed = index.load_hashes(run / "nnhash_mapping.obj")
+            index.load_manifest(run, hashed)
+            logger.info("Resolving labeled representative occurrences")
+            index.resolve()
+            # Notebook inputs may contain a permanently masked ESM entry. Prefer
+            # the original raw vectors so moving the target restores that center.
+            esm_path = input_dir / "glm_outputs" / ESM_FILENAME
+            original_esm = run / "glm_outputs" / ESM_FILENAME
+            if input_mode == "masked" and original_esm.is_file():
+                esm_path = original_esm
+            embeddings = load_esm_embeddings(esm_path)
+            mean, std = load_normalization()
+            db = index.db
+            logger.info("Validating and deduplicating normalized masked contexts")
+            for job_id, _, row in index.iter_jobs():
+                inputs, attention = prepare_batch([row], embeddings, mean, std)
+                signature = context_signature(inputs[0], attention[0], row.center_index)
+                db.execute("UPDATE jobs SET signature=? WHERE id=?", (signature, job_id))
+                db.execute("INSERT OR IGNORE INTO vectors(signature,job_id) VALUES (?,?)", (signature, job_id))
+            db.commit()
+            count = db.execute("SELECT COUNT(*) FROM targets").fetchone()[0]
+            unique = db.execute("SELECT COUNT(*) FROM vectors").fetchone()[0]
+            logger.info("Embedding %d unique masked contexts for %d GLM labels on %s (layer %d)",
+                        unique, count, device, LAYER)
+            model = load_model(device)
+            iterator = index.iter_jobs(unique=True)
             completed = 0
-            while rows := list(islice(iterator, batch_size)):
+            while jobs := list(islice(iterator, batch_size)):
+                rows = [job[2] for job in jobs]
                 inputs, attention = prepare_batch(rows, embeddings, mean, std)
                 vectors = embed_centers(model, inputs, attention, rows, device)
-                for row, vector in zip(rows, vectors):
-                    writer.writerow([row.source_file, row.source_row, row.name, row.center_id, *vector])
+                db.executemany("UPDATE vectors SET value=? WHERE signature=?",
+                               ((np.asarray(vector, dtype="<f4").tobytes(), job[1])
+                                for job, vector in zip(jobs, vectors)))
+                db.commit()
                 completed += len(rows)
-                logger.info("Embedded %d/%d centers", completed, count)
-        except BaseException:
-            output.unlink()
-            raise
+                logger.info("Embedded %d/%d unique contexts", completed, unique)
+            # The targets table has a unique triple constraint. The inner joins
+            # below must cover every target; never silently publish partial labels.
+            if db.execute("SELECT COUNT(*) FROM vectors WHERE value IS NULL").fetchone()[0]:
+                raise ValueError("Some context-only inference jobs did not return embeddings")
+            with output.open("x", newline="") as handle:
+                try:
+                    writer = csv.writer(handle, delimiter="\t")
+                    writer.writerow(["source_file", "source_row", "neighborhood_name", "rep", "query", *range(ESM_DIM)])
+                    written = 0
+                    for result in index.output_rows():
+                        vector = np.frombuffer(result["value"], dtype="<f4")
+                        writer.writerow([*tuple(result)[:5], *vector])
+                        written += 1
+                    if written != count:
+                        raise ValueError(f"GLM label coverage mismatch: expected {count}, wrote {written}")
+                except BaseException:
+                    output.unlink()
+                    raise
     logger.info("Saved center embeddings to %s", output)
     return output
