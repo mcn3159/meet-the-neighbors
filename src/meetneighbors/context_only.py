@@ -129,45 +129,17 @@ def select_device(name):
 
 
 def load_model(device):
-    from transformers import RobertaConfig
-    from meetneighbors.predictvfs.glm.gLM import gLM
-    from meetneighbors.predictvfs.loader import get_glm_model_path
+    from meetneighbors.predictvfs.glm import glm_embed
 
-    # Match neighborhood_classification.create_glm_embeds checkpoint architecture.
-    config = RobertaConfig(
-        vocab_size=30522, max_position_embedding=MAX_PROTEINS,
-        hidden_size=ESM_DIM, num_attention_heads=10, type_vocab_size=1,
-        tie_word_embeddings=False, num_hidden_layers=19, num_pc=100,
-        num_pred=4, predict_probs=True, emb_dim=ESM_DIM + 1,
-        output_attentions=False, output_hidden_states=True,
-        position_embedding_type="relative_key_query",
-    )
-    model = gLM(config)
-    state = torch.load(get_glm_model_path(), map_location=device)
-    incompatible = model.load_state_dict(state, strict=False)
-    # Older Transformers checkpoints can have additional position_ids buffers.
-    # Never silently use randomly initialized weights for the embedding pathway.
-    missing = [key for key in incompatible.missing_keys
-               if key.startswith(("dense.", "roberta.roberta."))]
-    if missing:
-        raise ValueError(f"GLM checkpoint is missing embedding weights: {missing}")
-    del state
-    return model.eval().to(device)
+    # Share extraction's validated checkpoint loader; load only through layer 9.
+    return glm_embed.load_model(device, layer=LAYER)
 
 
 def embed_centers(model, inputs, attention, rows, device):
-    with torch.inference_mode(), torch.autocast(
-            device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"):
-        # Bypass the prediction/loss heads: these do not contribute to hidden states.
-        outputs = model.roberta.roberta(
-            inputs_embeds=model.dense(inputs.to(device)),
-            attention_mask=attention.to(device),
-            output_attentions=False, output_hidden_states=True, return_dict=True,
-        )
-        hidden = outputs.hidden_states[LAYER]
-        centers = torch.tensor([row.center_index for row in rows], device=device)
-        vectors = hidden[torch.arange(len(rows), device=device), centers]
-        vectors = vectors.float().cpu().numpy()
+    from meetneighbors.predictvfs.glm import glm_embed
+
+    hidden = glm_embed.embed_centers(model, inputs, attention, rows, device, ESM_DIM, LAYER)
+    vectors = hidden[np.arange(len(rows)), [row.center_index for row in rows]]
     if vectors.shape != (len(rows), ESM_DIM) or not np.isfinite(vectors).all():
         raise ValueError("GLM returned invalid layer-9 center embeddings")
     return vectors
@@ -246,18 +218,18 @@ def run_context_only(input_dir, out, batch_size=100, device="auto", input_mode="
                 db.commit()
                 completed += len(rows)
                 logger.info("Embedded %d/%d unique contexts", completed, unique)
-            # The targets table has a unique triple constraint. The inner joins
+            # The targets table distinguishes labels by occurrence position. The inner joins
             # below must cover every target; never silently publish partial labels.
             if db.execute("SELECT COUNT(*) FROM vectors WHERE value IS NULL").fetchone()[0]:
                 raise ValueError("Some context-only inference jobs did not return embeddings")
             with output.open("x", newline="") as handle:
                 try:
                     writer = csv.writer(handle, delimiter="\t")
-                    writer.writerow(["source_file", "source_row", "neighborhood_name", "rep", "query", *range(ESM_DIM)])
+                    writer.writerow(["source_file", "source_row", "neighborhood_name", "rep", "query", "nn_center_id", *range(ESM_DIM)])
                     written = 0
                     for result in index.output_rows():
                         vector = np.frombuffer(result["value"], dtype="<f4")
-                        writer.writerow([*tuple(result)[:5], *vector])
+                        writer.writerow([*tuple(result)[:6], *vector])
                         written += 1
                     if written != count:
                         raise ValueError(f"GLM label coverage mismatch: expected {count}, wrote {written}")

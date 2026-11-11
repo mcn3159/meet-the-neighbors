@@ -1,5 +1,6 @@
 import pandas as pd
 import argparse
+import csv
 import re
 import glob
 import dask
@@ -19,9 +20,14 @@ def read_search_tsv(**kwargs):
     mmseqs_search_res = kwargs.get("input_mmseqs",None)
     headers = ['query','target','evalue','pident','qcov','fident','alnlen','qheader','theader','tset','tsetid']
     partitions = kwargs.get("threads",4)
-    mmseqs = dask.dataframe.read_csv(mmseqs_search_res,sep='\t')
+    # convertalis writes no header. Detect annotated/headered saved files without
+    # consuming the first search hit as column names in the ordinary CLI path.
+    with open(mmseqs_search_res, newline='') as handle:
+        first = next(csv.reader(handle, delimiter='\t'), [])
+    has_header = {'query', 'target', 'tset'}.issubset(first)
+    options = {} if has_header else {'header': None, 'names': headers}
+    mmseqs = dask.dataframe.read_csv(mmseqs_search_res, sep='\t', **options)
     mmseqs = mmseqs.compute()
-    if (mmseqs.columns[-1] != 'tsetid') and (mmseqs.columns[-1] != 'vfdb_genus'): mmseqs.columns = headers
     if vfdb:
         #extract vf annots from columns
         pattern = r"(\) .* \[)([^\]]+)\s*\(([^)]+)\)\s*-\s*([^\]]+)\(" #use https://regex101.com/ to see what pattern is doing

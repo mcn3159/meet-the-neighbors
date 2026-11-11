@@ -68,7 +68,7 @@ def map_vfcenters_to_vfdb_annot(prepped_mmseqs_clust,mmseqs_search,vfdb,removed_
         surviving_queries = len(set(mmseqs_search[~mmseqs_search['prot_gffname'].isin(removed_neighborhoods)]['query']))
         logger.debug(f"Number of queries that didn't pass minimum neighborhood criteria: {len(set(mmseqs_search['query'])) - surviving_queries} out of {len(set(mmseqs_search['query']))} with hits")
 
-    mmseqs_search.drop_duplicates(subset=['prot_gffname'],inplace=True) # to reduce mmseqs_clust shape explosion
+    mmseqs_search.drop_duplicates(subset=['prot_gffname', 'query'],inplace=True) # to reduce mmseqs_clust shape explosion
 
     # merge with how=left to keep NAs for proteins that part of the neighborhood but not a VF
     if vfdb:
@@ -147,17 +147,32 @@ def hash_neighborhoods(mmseqs_clust,args):
     # create a hash for neighborhood names with the same content and order for deduplication.
     # not dask maping this function b/c I need to make and keep the dictionary output. And idk how dask map behaves w/ hashing 
     # use nn_hash dictionary to map back embeddings with an nn. Should run this after a reduce overlap
-    mmseqs_clust_grps = mmseqs_clust.groupby('neighborhood_name')[['rep','start']]
+    from meetneighbors.neighborhood_order import ordered_occurrences, query_labels
 
-    nn_hash = {nn: hash(tuple(grp.sort_values(by='start').drop_duplicates(subset='start')['rep'])) # tested the grp.sort_values and drop_duplicates, and it looks like drop_dups doesnt change the row positioning!
-               for nn,grp in mmseqs_clust_grps}
-
+    mmseqs_clust = mmseqs_clust.copy()
+    mmseqs_clust['start'] = pd.to_numeric(mmseqs_clust['start'], errors='raise')
+    # Duplicate search hits at one start share a GLM position; different starts
+    # remain distinct even when they have the same protein name/representative.
+    mmseqs_clust['nn_idx'] = (
+        mmseqs_clust.groupby('neighborhood_name')['start'].rank(method='dense').astype(int) - 1
+    )
+    mmseqs_clust_grps = mmseqs_clust.groupby('neighborhood_name')
+    nn_hash = {nn: hash(tuple(ordered_occurrences(grp)['rep']))
+               for nn, grp in mmseqs_clust_grps}
     mmseqs_clust['nn_hashes'] = mmseqs_clust['neighborhood_name'].map(nn_hash.get)
 
-    # We want one hash per neighborhood, and then later map the neighborhood and it's respective query back to the final results.
-    # Need to make sure that the query matches the nn VF_center for this to work correctly. 
-    nn_hash = mmseqs_clust.loc[mmseqs_clust['prot_gffname'] == (mmseqs_clust['VF_center'] +'!!!'+ mmseqs_clust['gff'])].groupby('nn_hashes',dropna=True)[['query','rep','neighborhood_name']].apply(lambda x: x.values.tolist()).to_dict()
-    nn_per_hash = mmseqs_clust.groupby('nn_hashes',group_keys=False)['neighborhood_name'].apply(lambda x: x.sample(1))
+    centers = mmseqs_clust.loc[
+        mmseqs_clust['prot_gffname'] == (mmseqs_clust['VF_center'] + '!!!' + mmseqs_clust['gff']),
+        ['nn_hashes', 'query', 'rep', 'neighborhood_name', 'nn_idx']
+    ].copy()
+    centers['query'] = centers['query'].map(lambda query: query_labels([query]))
+    if centers['query'].map(len).eq(0).any():
+        raise ValueError('VF center has no query labels')
+    centers = centers.explode('query').drop_duplicates()
+    nn_hash = centers.groupby('nn_hashes', dropna=True)[
+        ['query', 'rep', 'neighborhood_name', 'nn_idx']
+    ].apply(lambda x: x.values.tolist()).to_dict()
+    nn_per_hash = mmseqs_clust.groupby('nn_hashes', group_keys=False)['neighborhood_name'].apply(lambda x: x.sample(1))
     mmseqs_clust = mmseqs_clust[mmseqs_clust['neighborhood_name'].isin(nn_per_hash)]
 
     return mmseqs_clust, nn_hash

@@ -40,21 +40,25 @@ elif torch.backends.mps.is_available():
 else:
     DEVICE = torch.device('cpu')
 
+EMB_DIM = 1281
+ESM_DIM=1280
+
 
 def pull_neighborhoodsdf(args,tmpd,logger):
+    genome_query = not (args.query_fasta or args.prot_genome_pairs)
 
-    if args.resume:
-        if args.cluster:
-            file_to_check = f'{args.out}combined_fastas_clust_res.tsv'
-        else:
-            file_to_check = f"{args.out}combined.fasta"
-        if args.query_fasta: # this resume check doesnt work for prot_genome_pairs and maybe chop-genomes mode. Adjust soon, tired now
-            mmseqs_grp_db,mmseqs_search = n.read_search_tsv(input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
-        else:
-            file_to_check = f"{args.out}neighborhoods_db.tsv"
+    # if args.resume:
+    #     if args.cluster:
+    #         file_to_check = f'{args.out}combined_fastas_clust_res.tsv'
+    #     else:
+    #         file_to_check = f"{args.out}combined.fasta"
+    #     if args.query_fasta and not args.prot_genome_pairs: # this resume check doesnt work for prot_genome_pairs and maybe chop-genomes mode. Adjust soon, tired now
+    #         mmseqs_grp_db,mmseqs_search = n.read_search_tsv(input_mmseqs=f"{args.out}vfs_in_genomes.tsv",threads=args.threads)
+    #     elif not os.path.isfile(file_to_check):
+    #         file_to_check = f"{args.out}neighborhoods_db.tsv"
         
-    if (args.resume and not os.path.isfile(file_to_check)) or (not args.resume):
-        if args.query_fasta:
+    if (args.resume and (not os.path.isfile(f'{args.out}combined_fastas_clust_res.tsv') or (not f"{args.out}neighborhoods_db.tsv"))) or (not args.resume):
+        if args.query_fasta or args.prot_genome_pairs:
             if args.prot_genome_pairs:
                 mmseqs_search = pd.read_csv(args.prot_genome_pairs,sep="\t",names=['target','tset']) # this is a pseudo mmseqs search, b/c it will match requirements for future functions
                 mmseqs_search['query'] = mmseqs_search['target']
@@ -107,45 +111,68 @@ def pull_neighborhoodsdf(args,tmpd,logger):
             neighborhood_db.to_csv(f"{args.out}neighborhoods_db.tsv",sep="\t",index=False)
         else:
             raise Exception("Inputs arguments must include --genomes and --query_fasta, or --genome_tsv, or --prot_genome_pairs")
-    elif args.resume and os.path.isfile(file_to_check) and (not args.query_fasta):
+        
+        if args.cluster: # need the mmseqs_search object from a query fasta from this work
+            logger.debug("Clustering proteins found in all neighborhoods...")
+            mm.mmseqs_cluster(args)
+            singular_combinedfasta = f"{args.out}combined_fastas_clust_rep.fasta" # to match inputs into glm_input_frm_neighbors.py
+            if not args.query_fasta or args.prot_genome_pairs:
+                rep_prots = list(SeqIO.parse(singular_combinedfasta,'fasta'))
+                for rec in rep_prots:
+                    rec.id = rec.id.split('|')[-1] # mmseqs honors the lc after the last |
+                SeqIO.write(rep_prots,open(singular_combinedfasta,'w'),'fasta') 
+            mmseqs_clust = f"{args.out}combined_fastas_clust_res.tsv"
+            
+        else:
+            # grab all the proteins found from all neighborhoods, to then send to a dataframe with neighborhood id info
+            if isinstance(args.genome_tsv,pd.DataFrame):
+                combinedfastas = list(args.genome_tsv['protein'])
+                genome_query=True
+            elif not (args.query_fasta or args.prot_genome_pairs):
+                combinedfastas = sorted(glob.glob(f"{args.genomes}*.faa") + glob.glob(f"{args.genomes}*.fasta"))
+                genome_query = True
+            else:
+                combinedfastas = glob.glob(f"{args.out}combined_fasta_partition*")
+                genome_query=False
+            
+            singular_combinedfasta = f"{args.out}combined.fasta" # this looks broken!!
+            with open(singular_combinedfasta,"w") as outfile:
+                for fasta in combinedfastas:
+                    records = glm.SeqIO.parse(fasta, "fasta")
+                    for record in records:
+                        if genome_query:
+                            record.id = record.id.split('|')[-1]
+                            record.description = record.id
+                        glm.SeqIO.write(record, outfile, "fasta")
+
+            # i think its faster to open the singular combined fasta and loop once, then looping through the records of each partition, didnt test this tho!
+            allids = [rec.id for rec in glm.SeqIO.parse(singular_combinedfasta,"fasta")]
+            # simulate an mmseqs clustering df output without actually clustering proteins, so that written functions work
+            mmseqs_clust = pd.DataFrame([allids,allids]).T
+            mmseqs_clust.columns = ['rep','locus_tag'] 
+
+    elif args.resume and os.path.isfile(f"{args.out}neighborhoods_db.tsv") and (not (args.query_fasta or args.prot_genome_pairs)):
         logger.debug("Resuming from previous run, loading neighborhood database...")
         neighborhood_db = dd.read_csv(f"{args.out}neighborhoods_db.tsv",sep="\t").compute()
-
-    
-    if args.cluster: # need the mmseqs_search object from a query fasta from this work
-        logger.debug("Clustering proteins found in all neighborhoods...")
-        mm.mmseqs_cluster(args)
-        singular_combinedfasta = f"{args.out}combined_fastas_clust_rep.fasta" # to match inputs into glm_input_frm_neighbors.py
-        if not args.query_fasta or args.prot_genome_pairs:
-            rep_prots = list(SeqIO.parse(singular_combinedfasta,'fasta'))
-            for rec in rep_prots:
-                rec.id = rec.id.split('|')[-1] # mmseqs honors the lc after the last |
-            SeqIO.write(rep_prots,open(singular_combinedfasta,'w'),'fasta') 
-        mmseqs_clust = f"{args.out}combined_fastas_clust_res.tsv"
-        
-    else:
-        # grab all the proteins found from all neighborhoods, to then send to a dataframe with neighborhood id info
-        if isinstance(args.genome_tsv,pd.DataFrame):
-            combinedfastas = list(args.genome_tsv['protein'])
-            genome_query=True
-        else:
-            combinedfastas = glob.glob(f"{args.out}combined_fasta_partition*")
-            genome_query=False
-        
         singular_combinedfasta = f"{args.out}combined.fasta" # this looks broken!!
-        with open(singular_combinedfasta,"w") as outfile:
-            for fasta in combinedfastas:
-                records = glm.SeqIO.parse(fasta, "fasta")
-                glm.SeqIO.write(records, outfile, "fasta")
-
         # i think its faster to open the singular combined fasta and loop once, then looping through the records of each partition, didnt test this tho!
         allids = [rec.id for rec in glm.SeqIO.parse(singular_combinedfasta,"fasta")]
         # simulate an mmseqs clustering df output without actually clustering proteins, so that written functions work
         mmseqs_clust = pd.DataFrame([allids,allids]).T
         mmseqs_clust.columns = ['rep','locus_tag'] 
+        genome_query = True
+    elif args.resume and os.path.isfile(f"{args.out}combined_fastas_clust_res.tsv"):
+        logger.debug("Resuming from previous run, loading mmseqs clustering results...")
+        mmseqs_clust = f"{args.out}combined_fastas_clust_res.tsv"
+        singular_combinedfasta = f"{args.out}combined_fastas_clust_rep.fasta" # to match inputs into glm_input_frm_neighbors.py
+        if args.query_fasta and not args.prot_genome_pairs:
+            _, mmseqs_search = n.read_search_tsv(
+                input_mmseqs=f"{args.out}vfs_in_genomes.tsv", threads=args.threads)
+    genome_query = not (args.query_fasta or args.prot_genome_pairs)
+
     
     # b/c we didnt do an initial search all VF centers are the queries for glm input purposes. This will end up creating a lot of glm_inputs
-    if args.query_fasta:
+    if args.query_fasta or args.prot_genome_pairs:
         mmseqs_clust = pn.prep_cluster_tsv(mmseqs_clust,logger)
         logger.debug("Prepped mmseqs clustering results dataframe. Now merging with mmseqs search results...")
         mmseqs_clust = pn.map_vfcenters_to_vfdb_annot(mmseqs_clust,mmseqs_search,vfdb=None,removed_neighborhoods=None,logger=logger) # need to fix removed_neighborhoods later
@@ -177,7 +204,8 @@ def pull_neighborhoodsdf(args,tmpd,logger):
         logger.debug(f"Total number of neighborhoods pre-hash: {len(set(mmseqs_clust['neighborhood_name']))}")
         
         mmseqs_clust, nn_hash = pn.hash_neighborhoods(mmseqs_clust,args)
-        pkl.dump(nn_hash,open(f'{args.out}nnhash_mapping.obj','wb'))
+        with open(f'{args.out}nnhash_mapping.obj', 'wb') as handle:
+            pkl.dump(nn_hash, handle)
 
     logger.debug(f"Total number of neighborhoods post-hash: {len(set(mmseqs_clust['neighborhood_name']))}")
     try: # incase resume was called
@@ -188,6 +216,7 @@ def pull_neighborhoodsdf(args,tmpd,logger):
     mmseqs_clust.to_csv(f"{args.out}clust_res_in_neighborhoods/mmseqs_clust.tsv",sep="\t",index=False)
 
     return mmseqs_clust, singular_combinedfasta, nn_hash
+
 
 def checkXle(fasta_recs):
     # pLM used for gLM doesn't have a token for J amino acids (or Xle) or replace w/ the most similar, Leucine
@@ -208,7 +237,14 @@ def get_plm_embeds(glm_inputs_path,glm_outputs_path):
     with open(f"{glm_outputs_path}/all_glm_input_prots_reps.fasta","w") as handle:
         SeqIO.write(fasta_recs,handle,"fasta")
 
-    sequence_representations = plm.run_plm(f"{glm_outputs_path}/all_glm_input_prots_reps.fasta")
+    backend, device, use_cuda = plm.get_distributed_backend_and_device()
+    plm_model, plm_vocab = plm.load_plm(backend,device,use_cuda)
+    sequence_representations = plm.run_plm(
+        model = plm_model,
+        vocab = plm_vocab,
+        device = device,
+        seq_records = fasta_recs
+    )
     try:
         fi = open(f"{glm_outputs_path}/all_glm_input_prots_reps.esm.embs.pkl", "wb")
         pkl.dump(sequence_representations,fi)
@@ -218,7 +254,43 @@ def get_plm_embeds(glm_inputs_path,glm_outputs_path):
         pdb.set_trace()
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()
-    return
+    seqreps_d = {plmembed[0].split(' ')[0]:[plmembed[1],plmembed[0].split(' ')[-1]] for plmembed in sequence_representations}
+
+    return seqreps_d
+
+def prepare_batch(rows, plmreps_d, mean, std, max_proteins):
+    """Match batch_data's float16 staging, then promote to float32 for GLM.
+
+    Normalize all 1280 ESM features without masking any center or neighbor.
+    The final feature records strand as +/-0.5; padding stays zero.
+    """
+    for row in rows:
+        if not 0 < len(row.proteins) <= max_proteins:
+            raise ValueError(f"{row.neighborhood_name}: invalid protein count")
+        if not 0 <= row.center_index < len(row.proteins):
+            raise ValueError(f"{row.neighborhood_name}: invalid center index")
+    inputs = np.zeros((len(rows), max_proteins, ESM_DIM + 1), dtype=np.float16) # inputs are all the same shape, fill with 0s, NNs less than MAX_PROTEINS (30) will have there rest of their inputs be 0
+    attention = np.zeros((len(rows), max_proteins), dtype=np.int64) # I think this is the attention mask, as in what positions attention will be applied on, and others that will be ignored
+    for batch_index, row in enumerate(rows):
+        for position, protein in enumerate(row.proteins):
+            try:
+                raw = plmreps_d[protein[1:]][0] # pull the ESM embedding for the protein id, also remove the strand information so key is recognized
+            except KeyError as exc:
+                raise ValueError(
+                    f"{row.source_file}:{row.neighborhood_name}: missing neighbor ESM embedding {protein[1:]}"
+                ) from exc
+            inputs[batch_index, position, :ESM_DIM] = (np.asarray(raw, dtype=np.float32) - mean) / std # normalize the ESM embedding
+            inputs[batch_index, position, ESM_DIM] = 0.5 if protein[0] == "+" else -0.5 # add strand information
+            attention[batch_index, position] = 1 # attention positions to pay attention to
+        if not np.isfinite(inputs[batch_index]).all():
+            raise ValueError(f"{row.source_file}:{row.neighborhood_name}: normalized ESM features are not finite")
+    return torch.from_numpy(inputs).float(), torch.from_numpy(attention) # send everything to torch tensor
+
+def embed_sequences(plmreps_d, glm_model, rows, mean, std, max_proteins, layer):
+    batchin, attn = prepare_batch(rows, plmreps_d, mean, std, max_proteins)
+    glm_vectors = glm_e.embed_centers(model=glm_model, inputs=batchin, attention=attn,
+                                      rows=rows, device=DEVICE, esm_dim=ESM_DIM, layer=layer)
+    return glm_vectors
 
 def create_glm_embeds(f_list,glm_outputs_path,norm_factors,PCA_LABEL,ngpus,bs):
     # need to incorporate pkl files from glm (norm and pca.pkl)
@@ -233,7 +305,6 @@ def create_glm_embeds(f_list,glm_outputs_path,norm_factors,PCA_LABEL,ngpus,bs):
     pos_emb = "relative_key_query"
     pred_probs = True
     HIDDEN_SIZE = 1280
-    EMB_DIM = 1281
     NUM_PC_LABEL = 100
      # populate config 
     config = RobertaConfig(
@@ -280,57 +351,22 @@ def get_embed_preds(embeds,model_weights,lb,args): # might want to put lb into t
         state_dict = torch.load(model_weights, map_location=DEVICE)
     model.load_state_dict(state_dict)
     model.eval()
-    if 'neighborhood_name' in embeds.columns:
-        embed_start_col = 2
-    else: # running in centroids mode
-        embed_start_col = 1
-    if args.memory_optimize:
-        batch_size = int(embeds.shape[0]/ 5)
-        batch_size = max(1,batch_size)
-        all_outputs = []
-        for i in range(0,len(embeds),batch_size):
-            batch = embeds.iloc[i:i+batch_size,embed_start_col:embed_start_col+input_dim]
-            batch = torch.tensor(batch.values.astype(np.float32)).to(DEVICE)
-            with torch.no_grad():
-                outputs = model(batch)
-            all_outputs.append(outputs)
-        outputs = torch.cat(all_outputs, dim=0)
-    else:
-        with torch.no_grad():
-            if 'neighborhood_name' in embeds.columns:
-                outputs = model(torch.tensor(embeds.iloc[:,2:2+input_dim].values.astype(np.float32)).to(DEVICE)) # iloc starting at 2 b/c of nn column
-            else: # should turn this into an argument to run with centroids
-                outputs = model(torch.tensor(embeds.iloc[:,1:1+input_dim].values.astype(np.float32)).to(DEVICE))
+    from meetneighbors.embedding_pipeline import embedding_columns
+    columns = embedding_columns(embeds)
+    batch_size = max(1, int(getattr(args, 'glm_bs', 100)))
+    all_outputs = []
+    with torch.inference_mode():
+        for start in range(0, len(embeds), batch_size):
+            values = embeds.iloc[start:start + batch_size][columns].to_numpy(dtype=np.float32)
+            all_outputs.append(model(torch.from_numpy(values).to(DEVICE)).cpu())
+    outputs = torch.cat(all_outputs, dim=0)
+    embeds = embeds.reset_index(drop=True)
     
     ecc_predictions = pd.DataFrame(F.softmax(outputs,dim=1).detach().cpu().numpy())
     ecc_predictions.columns = [cat for cat in lb.classes_]
 
-    try:
-        if 'neighborhood_name' in embeds.columns:
-            ecc_predictionsdf = pd.concat([embeds['query'],embeds['neighborhood_name'],ecc_predictions],axis=1)
+    from meetneighbors.embedding_pipeline import METADATA
+    metadata = [column for column in METADATA if column in embeds.columns]
+    ecc_predictionsdf = pd.concat([embeds[metadata], ecc_predictions], axis=1)
 
-            # So the annotations rarely ever mapped with the code commented out below. Don't think it's worth fixing, was just nice to have annotations in results
-            # map annotations to predictionsdf
-            # prot_annots = {}
-            # prot_faas = [proteome for proteome in glob.glob(args.genomes+'*') if '.gff' not in proteome]
-            # for fasta in prot_faas:
-            #     prot_annots.update({rec.id.split('|')[-1]:' '.join(rec.description.split(' ')[1:]) for rec in SeqIO.parse(fasta,"fasta")})
-            
-            # neighborhoods couldn't be extracted for some queries b/c it didn't fit the minimum neighborhood definition requirements
-            # logger.debug("Number of queries with no neighborhoods:",len(prot_annots)-len(set(embeds['query'])))
-            
-            # ecc_predictionsdf['seq_annotations'] = ecc_predictionsdf['query'].map(prot_annots)
-            
-            new_col_order = ['query', 'neighborhood_name'] + list(lb.classes_)
-        else:
-            ecc_predictionsdf = pd.concat([embeds['query'],ecc_predictions],axis=1)
-            new_col_order = ['query'] + list(lb.classes_)
-
-        ecc_predictionsdf = ecc_predictionsdf[new_col_order]
-    except Exception as e:
-        print("Ran into an error when creating final predictions dataframe, opening console to debug..")
-        print(e)
-        print('lb classes:',lb.classes_)
-        pdb.set_trace()
-    
     return ecc_predictionsdf

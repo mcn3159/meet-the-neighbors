@@ -201,7 +201,10 @@ def _select(available, names, n_random, seed):
     selected = list(dict.fromkeys(names))
     missing = set(selected) - available
     if missing:
-        raise ValueError(f"Unknown neighborhood names: {', '.join(sorted(missing))}")
+        LOG.warning("Skipping neighborhood names not found in the input directory: %s", ', '.join(sorted(missing)))
+        selected = [name for name in selected if name in available]
+        if not selected:
+            raise ValueError("None of the requested neighborhood names were found in the input directory")
     n_random = (0 if selected else 10) if n_random is None else n_random
     if isinstance(n_random, bool) or not isinstance(n_random, int) or n_random < 0:
         raise ValueError("n_random must be a nonnegative integer")
@@ -484,6 +487,8 @@ def viz_neighborhoods(input_dir, out, neighborhood_names=None, *, n_random=None,
     """Write ``out/neighborhoods.html`` and return its path.
 
     ``neighborhood_names`` is an exact name or sequence of names from extraction.
+    Missing names are skipped with a warning. If no requested names are found,
+    raise ``ValueError`` even when ``n_random`` is positive.
     ``n_random`` adds random names, excluding explicit selections; its default is
     ten without names and zero with names. ``seed`` makes sampling reproducible.
     Supply either ``genomes`` (a directory) or ``genome_tsv`` (headerless columns

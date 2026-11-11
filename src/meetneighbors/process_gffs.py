@@ -102,7 +102,7 @@ def get_protseq_frmFasta(logger, args, dir_for_fastas, neighborhood):
                 # Create new record with modified ID
                 # new_rec = SeqRecord(record.seq, id=rec_id, description=record.description)
                 record.id = rec_id
-                rec[record.id] = [record.seq,record.description.split(f'{record.id} ')[1]]
+                rec[record.id] = [record.seq,record.description.partition(' ')[2]]
                 
                 # Early exit if we've found all proteins
                 if len(rec) == len(protein_ids):

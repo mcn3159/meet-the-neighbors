@@ -113,10 +113,20 @@ class ContextOnlyTests(unittest.TestCase):
             states = model.roberta.roberta(inputs_embeds=model.dense(inputs),
                                            attention_mask=attention,
                                            output_hidden_states=True).hidden_states
-        with patch.object(co, "ESM_DIM", 20):
+        with patch.object(co, "ESM_DIM", 20), \
+             patch.object(model, "forward", side_effect=AssertionError("full GLM forward called")), \
+             patch.object(model.roberta.lm_head, "forward", side_effect=AssertionError("prediction head called")):
             actual = co.embed_centers(model, inputs, attention, rows, torch.device("cpu"))
         np.testing.assert_allclose(actual, states[9][[0, 1], [0, 1]].numpy(), atol=1e-6)
         self.assertFalse(np.allclose(actual, states[10][[0, 1], [0, 1]].numpy()))
+
+    def test_loader_uses_shared_embedding_backbone_at_layer_nine(self):
+        from meetneighbors.predictvfs.glm import glm_embed
+        device = torch.device('cpu')
+        with patch.object(glm_embed, 'load_model', return_value=object()) as load:
+            model = co.load_model(device)
+        load.assert_called_once_with(device, layer=9)
+        self.assertIs(model, load.return_value)
 
     def test_output_order_partial_batch_and_collision(self):
         self.write_tsv("not a neighborhood TSV", "._a.tsv")
@@ -138,12 +148,14 @@ class ContextOnlyTests(unittest.TestCase):
             with result.open() as handle:
                 table = list(csv.reader(handle, delimiter="\t"))
             self.assertEqual(calls, [2, 1])
-            self.assertEqual(len(table[0]), 1285)
+            self.assertEqual(len(table[0]), 1286)
             self.assertEqual([row[:4] for row in table[1:]], [
                 ["a.tsv", "1", "first", "A"], ["a.tsv", "2", "second", "B"],
                 ["z.tsv", "1", "last", "A"]])
             self.assertEqual([row[4] for row in table[1:]], ["a", "a", "z"])
-            self.assertEqual([float(row[5]) for row in table[1:]], [0, 1, 1])
+            self.assertEqual(table[0][5], "nn_center_id")
+            self.assertEqual([int(row[5]) for row in table[1:]], [0, 1, 1])
+            self.assertEqual([float(row[6]) for row in table[1:]], [0, 1, 1])
             with self.assertRaises(FileExistsError):
                 co.run_context_only(self.root, out)
 

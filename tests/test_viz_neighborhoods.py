@@ -97,7 +97,7 @@ class VisualizationTests(unittest.TestCase):
         self.assertEqual(viz._select(self.names, None, 2, 42), viz._select(reversed(self.names), None, 2, 42))
 
     def test_selection_errors_and_exhaustion(self):
-        for names, count, message in [("missing", 0, "Unknown"), (None, -1, "nonnegative"),
+        for names, count, message in [("missing", 0, "None of the requested"), (None, -1, "nonnegative"),
                                       (None, 0, "No neighborhoods"), (None, 1.5, "nonnegative")]:
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 viz._select(self.names, names, count, None)
@@ -105,6 +105,29 @@ class VisualizationTests(unittest.TestCase):
             selected = viz._select(self.names, self.names[0], 10, 42)
         self.assertEqual(len(selected), 3)
         self.assertIn("only 2 remain", logs.output[0])
+
+    def test_missing_names_warn_and_preserve_matching_order(self):
+        requested = ["absent_b", self.names[1], "absent_a", self.names[0], self.names[1]]
+        with self.assertLogs(viz.LOG, level="WARNING") as logs:
+            selected = viz._select(self.names, requested, None, 42)
+        self.assertEqual(selected, [self.names[1], self.names[0]])
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("absent_a, absent_b", logs.output[0])
+
+    def test_missing_names_preserve_seeded_random_additions(self):
+        expected = viz._select(self.names, self.names[0], 1, 42)
+        with self.assertLogs(viz.LOG, level="WARNING"):
+            selected = viz._select(self.names, ["absent", self.names[0]], 1, 42)
+        self.assertEqual(selected, expected)
+        self.assertEqual(len(selected), 2)
+
+    def test_all_requested_names_missing_errors_before_reclustering(self):
+        for names, count in [("absent", None), (["absent_a", "absent_b"], 0), (["absent"], 2)]:
+            with self.subTest(names=names, count=count), patch.object(viz, "_recluster") as recluster:
+                with self.assertLogs(viz.LOG, level="WARNING"), self.assertRaisesRegex(ValueError, "None of the requested"):
+                    self.render(names, n_random=count, recluster=True)
+                recluster.assert_not_called()
+                self.assertFalse((self.root / "viz").exists())
 
     def test_annotations_orientation_lengths_and_lanes(self):
         path = self.render(self.names[:2])
@@ -335,6 +358,27 @@ class VisualizationTests(unittest.TestCase):
         self.assertTrue((directory / "representatives.fasta").is_file())
         self.assertEqual(before, {p: p.read_bytes() for p in self.run.rglob("*") if p.is_file()})
 
+    def test_partial_match_reclusters_only_matching_neighborhood_proteins(self):
+        # Neither a missing name nor an unselected genome should require sources.
+        (self.genomes / "g2.gff").unlink()
+        (self.genomes / "g2.faa").unlink()
+        missing = "unknown!!!absent_genome!!!ctg!!!1-100"
+        with patch.object(viz.shutil, "which", return_value="mmseqs"), patch.object(viz.subprocess, "run", side_effect=self.fake_mmseqs):
+            with self.assertLogs(viz.LOG, level="WARNING") as logs:
+                path = self.render([missing, self.names[0]], recluster=True)
+        self.assertIn(missing, logs.output[0])
+        self.assertEqual([track["name"] for track in self.data(path)["tracks"]], [self.names[0]])
+        directory = path.parent / "recluster"
+        with (directory / "protein_mapping.tsv").open() as handle:
+            mapping = list(csv.DictReader(handle, delimiter="\t"))
+        self.assertEqual({row["neighborhood_name"] for row in mapping}, {self.names[0]})
+        self.assertEqual({row["protein_id"] for row in mapping}, {"A", "B", "C"})
+        self.assertEqual(len(mapping), 3)
+        actual_sequences = [sequence for _, sequence in viz._fasta(directory / "selected_proteins.fasta")]
+        expected_sequences = [sequence for _, sequence in viz._fasta(self.genomes / "g1.faa")]
+        self.assertCountEqual(actual_sequences, expected_sequences)
+        self.assertEqual(json.loads((directory / "run.json").read_text())["neighborhoods"], [self.names[0]])
+
     def test_recluster_failures_and_no_overwrite(self):
         with patch.object(viz.shutil, "which", return_value=None), self.assertRaisesRegex(ValueError, "not found on PATH"):
             self.render(self.names[0], recluster=True)
@@ -375,12 +419,22 @@ class VisualizationTests(unittest.TestCase):
 
     def test_cli_dispatch_does_not_import_ml_stack(self):
         argv = ["meetneighbors", "viz_neighborhoods", "--input-dir", str(self.run), "--out", str(self.root / "cli"),
-                "--genomes", str(self.genomes), "--neighborhood-names", self.names[0]]
+                "--genomes", str(self.genomes), "--neighborhood-names", "absent", self.names[0]]
         with patch.object(sys, "argv", argv), patch("sys.stdout", new_callable=io.StringIO) as stdout:
-            workflow(get_parser())
+            with self.assertLogs(viz.LOG, level="WARNING") as logs:
+                workflow(get_parser())
+        self.assertIn("absent", logs.output[0])
         self.assertTrue((self.root / "cli/neighborhoods.html").is_file())
         self.assertIn("neighborhoods.html", stdout.getvalue())
-        self.assertNotIn("meetneighbors.predictvfs.neighborhood_classification", sys.modules)
+        # Other suites legitimately import the ML workflow. Check lazy dispatch
+        # in a fresh interpreter so test order cannot change this assertion.
+        isolated_argv = [str(self.root / "cli_isolated") if item == str(self.root / "cli") else item
+                         for item in argv]
+        code = ("import sys; from meetneighbors.main import get_parser, workflow; "
+                f"sys.argv = {isolated_argv!r}; workflow(get_parser()); "
+                "assert 'meetneighbors.predictvfs.neighborhood_classification' not in sys.modules")
+        result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipUnless(shutil.which("mmseqs"), "MMseqs2 is not installed")
     def test_real_mmseqs_smoke(self):

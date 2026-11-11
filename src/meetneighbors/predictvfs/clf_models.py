@@ -28,18 +28,14 @@ class FullyConnectedNN(nn.Module):
 # load the meta classifier
 def meta_classifier(nn_struct_preds,model,lb):
     """ Get predictions from the integrated (meta classifier) model"""
-    model = pkl.load(model.open('rb'))
-    first_feature_ind,num_features = 2,12
-    # first_feature_ind,num_features = 1,12 # for centroids
-    newcolnames = {col:str(i)+'_x' if '_x' in col else str(i-num_features)+'_y'
-               for i,col in enumerate(nn_struct_preds.iloc[:,first_feature_ind:].columns)} # gotta match colnames to what was seen during fit
-    nn_struct_preds.rename(columns=newcolnames,inplace=True)
-    meta_preds = model.predict_proba(nn_struct_preds.iloc[:,first_feature_ind:])
-                        
-                        
-    meta_preds = pd.DataFrame(meta_preds)
-    meta_preds.columns = [cat for cat in lb.classes_]
-    # meta_preds = pd.concat([nn_struct_preds[['query','neighborhood_name','seq_annotations']],meta_preds],axis=1)
-    # meta_preds = pd.concat([nn_struct_preds[['query','neighborhood_name']],meta_preds],axis=1)
-    meta_preds = pd.concat([nn_struct_preds[['query']],meta_preds],axis=1)
-    return meta_preds
+    from meetneighbors.embedding_pipeline import METADATA
+
+    with model.open('rb') as handle:
+        classifier = pkl.load(handle)
+    # Preserve the trained feature order, independently of metadata columns.
+    columns = [f'{category}_{source}' for source in ('x', 'y') for category in lb.classes_]
+    features = nn_struct_preds[columns].copy()
+    features.columns = [f'{i}_{source}' for source in ('x', 'y') for i in range(len(lb.classes_))]
+    meta_preds = pd.DataFrame(classifier.predict_proba(features), columns=list(lb.classes_))
+    metadata = [column for column in METADATA if column in nn_struct_preds.columns]
+    return pd.concat([nn_struct_preds[metadata].reset_index(drop=True), meta_preds], axis=1)

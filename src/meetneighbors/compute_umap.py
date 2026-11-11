@@ -6,10 +6,45 @@ import pickle as pkl
 from tqdm import tqdm
 
 
-def unpack_embeddings(glm_out_dir,glm_in_dir,mmseqs_clust,logger, **kwargs): # lowkey don't need mmseqs_clust but it's here just to make sure things are working
+def legacy_center_targets(rows, hashes, mapping):
+    """Historical hash/rep matching: retain the first flattened occurrence.
+
+    Three-field mappings do not identify repeated occurrences. Keep the old
+    compute_umap selection for these artifacts only.
+    """
+    from meetneighbors.neighborhood_order import query_labels
+    first_occurrence = {}
+    for i, row in enumerate(rows):
+        key = hashes[row.neighborhood_name]
+        for position, protein in enumerate(row.proteins):
+            first_occurrence.setdefault((key, protein[1:]), (i, position))
+    targets = []
+    first_rep, seen = {}, set()
+    for key, entries in mapping.items():
+        for query, rep, name in entries:
+            first_rep.setdefault(name, rep)
+            occurrence = first_occurrence.get((key, rep))
+            if first_rep[name] != rep or occurrence is None:
+                continue
+            for label in query_labels([query]):
+                if (label, name) not in seen:
+                    targets.append((*occurrence, label, rep, name))
+                    seen.add((label, name))
+    return targets
+
+
+def unpack_embeddings(glm_out_dir,glm_in_dir,mmseqs_clust,logger=None, **kwargs): # lowkey don't need mmseqs_clust but it's here just to make sure things are working
+    from meetneighbors.embedding_pipeline import saved_batch_paths
+    batch_files = saved_batch_paths(glm_out_dir)
+    if batch_files:
+        return {str(i): pd.read_csv(path, sep='\t') for i, path in enumerate(batch_files)}
     mem_optimize = kwargs.get('mem_optimize',None)
     if mem_optimize:
-        nn_hash_df = pd.DataFrame([(k, *vals) for k, lst in mem_optimize.items() for vals in lst],columns=['nn_hashes','query','rep','neighborhood_name'])
+        from meetneighbors.embedding_pipeline import hash_format
+        columns = ['nn_hashes', 'query', 'rep', 'neighborhood_name']
+        if hash_format(mem_optimize) == 'indexed':
+            columns.append('nn_idx')
+        nn_hash_df = pd.DataFrame([(k, *vals) for k, lst in mem_optimize.items() for vals in lst], columns=columns)
         mem_optimize = True # here cus im tired, instead of making new func input for nn_hash 
         # query_rep_d = nn_hash_df.groupby('rep')['query'].apply(set).to_dict() # this is a dict of query to set of reps that are in the gLM batch for that query, this is used to subset the nn_hash_df for only the reps that are in the gLM batch for each query
 
@@ -24,6 +59,31 @@ def unpack_embeddings(glm_out_dir,glm_in_dir,mmseqs_clust,logger, **kwargs): # l
     input_tsv_cols = ['neighborhood_name','rep','vf_center_index']
 
     def get_hashedout_embeds(nn_hash_df,mmseqs_clust,glm_batch,input_tsv):
+        if 'nn_idx' in nn_hash_df:
+            from meetneighbors.glm_input_frm_neighbors import Neighborhood
+            from meetneighbors.embedding_pipeline import center_targets, METADATA
+            rows, offsets, offset = [], [], 0
+            for record in input_tsv.itertuples():
+                proteins = tuple(record.rep.split(';'))
+                rows.append(Neighborhood(glm_vf_fldrs_i[vf], record.neighborhood_name, (),
+                                         proteins, int(record.vf_center_index),
+                                         proteins[int(record.vf_center_index)][1:]))
+                offsets.append(offset)
+                offset += len(proteins)
+            if offset != len(glm_batch):
+                raise ValueError('Legacy protein embedding count does not match GLM inputs')
+            hashes = mmseqs_clust.loc[mmseqs_clust.neighborhood_name.isin(input_tsv.neighborhood_name), 'nn_hashes']
+            mapping = {key: group[['query', 'rep', 'neighborhood_name', 'nn_idx']].values.tolist()
+                       for key, group in nn_hash_df[nn_hash_df.nn_hashes.isin(hashes)].groupby('nn_hashes')}
+            targets = center_targets(rows, mmseqs_clust, mapping)
+            values = []
+            for i, position, metadata in targets:
+                rep, vector = glm_batch[offsets[i] + position]
+                if rep != metadata[3]:
+                    raise ValueError('Legacy embedding protein does not match indexed center')
+                values.append(vector)
+            return pd.concat([pd.DataFrame([m for _, _, m in targets], columns=METADATA),
+                              pd.DataFrame(np.asarray(values))], axis=1)
         input_tsv['rep'] = input_tsv['rep'].str.split(';')
         input_tsv = input_tsv.explode('rep').reset_index(drop=True).reset_index(names='rep_index') # now rep_index numbers should line up with what's in glm_batch
         input_tsv['rep'] = input_tsv['rep'].str[1:]
@@ -80,7 +140,7 @@ def unpack_embeddings(glm_out_dir,glm_in_dir,mmseqs_clust,logger, **kwargs): # l
 
 def get_glm_embeddf(glm_res_d_vals_predf,**kwargs): # format dictionary to an embedding df for uMAP plotting
     mem_optimize = kwargs.get('mem_optimize',None)
-    if mem_optimize:
+    if mem_optimize or all(isinstance(v, pd.DataFrame) for v in glm_res_d_vals_predf.values()):
         embedding_df = pd.concat([glm_res_d_vals_predf[k] for k in glm_res_d_vals_predf],axis=0)
         # assert len(embedding_df[embedding_df['query'].isna()]) == 0, "Some queries are NA, pls fix" # need to unhash after I remove nns with no query from merge
     else:
@@ -96,7 +156,8 @@ def get_umapdf(embedding_df):
     import umap # i know it's weird but this package is a pain to install
 
     cols_names = ['neighborhood_name','vf_name','vfid','vf_category','species','genus']
-    umapper = umap.UMAP().fit(embedding_df.iloc[:,1:-len(cols_names)].values)
+    from meetneighbors.embedding_pipeline import embedding_columns
+    umapper = umap.UMAP().fit(embedding_df[embedding_columns(embedding_df)].values)
     return umapper
 
 def plt_baby(umapper,embedding_df_merge,**kwargs):

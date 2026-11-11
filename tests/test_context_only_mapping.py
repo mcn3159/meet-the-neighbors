@@ -68,6 +68,50 @@ class ContextMappingTests(unittest.TestCase):
         self.assertEqual(list((self.root / "out").glob(".context_only_*")), [])
         return rows, calls
 
+    def test_duplicate_centers_from_explicit_manifest(self):
+        self.path.write_text("retained\t+A;-B;+A\t0\n")
+        (self.root / "glm_embeds.tsv").write_text(
+            "neighborhood_name\trep\tquery\tnn_center_id\t0\n"
+            "retained\tA\tq\t0\t99\nretained\tA\tq\t2\t99\n")
+        rows, calls = self.run_fixture()
+        self.assertEqual([row['nn_center_id'] for row in rows], ['0', '2'])
+        self.assertEqual([row['query'] for row in rows], ['q', 'q'])
+        self.assertEqual([row.center_index for row, _ in calls], [0, 2])
+        for row, inputs in calls:
+            np.testing.assert_array_equal(inputs[row.center_index, :1280], -2)
+            np.testing.assert_array_equal(inputs[2 - row.center_index, :1280], -.5)
+
+    def test_duplicate_centers_from_indexed_hash(self):
+        self.path.write_text("retained\t+A;-B;+A\t0\n")
+        self.hashes({7: [('q', 'A', 'restored', 0), ('q', 'A', 'restored', 2),
+                        ('retained-q', 'A', 'retained', 0)]})
+        rows, calls = self.run_fixture()
+        restored = [r for r in rows if r['neighborhood_name'] == 'restored']
+        self.assertEqual([r['nn_center_id'] for r in restored], ['0', '2'])
+        self.assertEqual([row.center_index for row, _ in calls], [0, 2])
+
+    def test_indexed_duplicate_manifest_requires_every_position(self):
+        self.path.write_text("retained\t+A;-B;+A\t0\n")
+        self.hashes({7: [('q', 'A', 'retained', 0), ('q', 'A', 'retained', 2)]})
+        (self.root / "glm_embeds.tsv").write_text(
+            "neighborhood_name\trep\tquery\tnn_center_id\nretained\tA\tq\t0\n")
+        with self.assertRaisesRegex(ValueError, 'unexpected reconstructed rows'):
+            self.index()
+
+    def test_indexed_duplicate_manifest_without_position_is_ambiguous(self):
+        self.path.write_text("retained\t+A;-B;+A\t0\n")
+        self.hashes({7: [('q', 'A', 'retained', 0), ('q', 'A', 'retained', 2)]})
+        self.manifest([('retained', 'A', 'q')])
+        with self.assertRaisesRegex(ValueError, 'nn_center_id is required'):
+            self.index()
+
+    def test_invalid_explicit_center_is_rejected_before_inference(self):
+        (self.root / "glm_embeds.tsv").write_text(
+            "neighborhood_name\trep\tquery\tnn_center_id\nretained\tA\tq\t1\n")
+        with patch.object(co, 'load_model') as model, self.assertRaisesRegex(ValueError, 'Cannot resolve'):
+            co.run_context_only(self.root, self.root / 'out', input_mode='original')
+        model.assert_not_called()
+
     def test_full_manifest_and_different_target_restoration(self):
         expected = [("retained", "A", "same"), ("omitted1", "A", "same"),
                     ("omitted1", "A", "different"), ("omitted2", "B", "other")]
@@ -289,8 +333,66 @@ class ContextMappingTests(unittest.TestCase):
 
     def test_conflicting_reference_columns_fail(self):
         (self.root / "glm_embeds.tsv").write_text("neighborhood_name\trep\trep_y\tquery\nretained\tA\tB\tq\n")
-        with self.assertRaisesRegex(ValueError, "conflicting rep"):
+        with self.assertRaisesRegex(ValueError, "conflicting rep.*rep .*='A'.*rep_y .*='B'"):
             self.index()
+
+    def test_empty_reference_query_reports_context_before_inference(self):
+        self.hashes({7: [("known-query", "A", "retained")]})
+        self.manifest([("retained", "A", "")])
+        with patch.object(co, "load_model") as model, self.assertRaises(ValueError) as raised:
+            co.run_context_only(self.root, self.root / "out", input_mode="original")
+        message = str(raised.exception)
+        for expected in ("glm_embeds.tsv:2:", "['query']", "4/4 fields",
+                         "neighborhood_name (column 1)='retained'", "rep_y (column 2)='A'",
+                         "query (column 3)=''", "known-query", "left merge/explode"):
+            self.assertIn(expected, message)
+        self.assertNotIn("12345", message)  # Never dump embedding values.
+        model.assert_not_called()
+        self.assertFalse((self.root / "out" / co.OUTPUT_FILENAME).exists())
+
+    def test_legacy_assembly_can_preserve_null_query(self):
+        mapping = {7: [(float("nan"), "A", "retained")]}
+        legacy = self.legacy_occurrences(mapping)
+        self.assertEqual(len(legacy), 1)
+        name, rep, query = next(iter(legacy))
+        self.assertTrue(np.isnan(query))
+        self.hashes(mapping)
+        # pandas to_csv writes this NaN as an empty field in glm_embeds.tsv.
+        self.manifest([(name, rep, "")])
+        with self.assertRaisesRegex(ValueError, r"fields \['query'\].*query candidates .*\[\]"):
+            self.index()
+
+    def test_missing_metadata_fields_are_named_and_escaped(self):
+        for column in ("neighborhood_name", "rep_y", "query"):
+            with self.subTest(column=column):
+                fields = dict(neighborhood_name="retained", rep_y="A", query="q")
+                fields[column] = " \t "
+                self.manifest([tuple(fields.values())])
+                index = ContextIndex(":memory:")
+                try:
+                    with self.assertRaises(ValueError) as raised:
+                        index.load_manifest(self.root, False)
+                    self.assertIn(f"['{column}']", str(raised.exception))
+                    self.assertIn("' \\t '", str(raised.exception))
+                finally:
+                    index.close()
+
+    def test_truncated_reference_reports_width_and_absent_field(self):
+        (self.root / "glm_embeds.tsv").write_text("neighborhood_name\trep\tquery\nretained\tA\n")
+        with self.assertRaisesRegex(ValueError, "expected 3 fields.*found 2.*query .*<absent>"):
+            self.index()
+
+    def test_missing_and_duplicate_reference_headers(self):
+        for header, expected in (("neighborhood_name\trep\n", "missing required metadata columns.*query"),
+                                 ("neighborhood_name\trep\tquery\tquery\n", "duplicate metadata columns.*query")):
+            with self.subTest(header=header):
+                (self.root / "glm_embeds.tsv").write_text(header)
+                index = ContextIndex(":memory:")
+                try:
+                    with self.assertRaisesRegex(ValueError, expected):
+                        index.load_manifest(self.root, False)
+                finally:
+                    index.close()
 
     def test_legacy_reference_without_rep(self):
         (self.root / "glm_embeds.tsv").write_text("query\t0\tneighborhood_name\nq\t1.0\tretained\n")

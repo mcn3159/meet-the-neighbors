@@ -3,7 +3,33 @@ from Bio import SeqIO
 import shutil
 import numpy as np
 
-from meetneighbors.predictvfs import neighborhood_classification as nc
+from dataclasses import dataclass
+import glob
+import subprocess
+from pathlib import Path
+from meetneighbors.neighborhood_order import ordered_occurrences, query_labels
+
+@dataclass(frozen=True)
+class Neighborhood:
+    source_file: str
+    neighborhood_name: str
+    queryname: tuple[str, ...]
+    proteins: tuple[str, ...]
+    center_index: int
+    center_id: str
+
+
+def link_genome_fasta(source, input_dir):
+    """Link either combined FASTA variant, repairing old relative symlinks."""
+    source = Path(source).resolve(strict=True)
+    # Keep the historical input filename for compatibility with saved runs.
+    destination = Path(input_dir) / 'combined_fastas_clust_rep.fasta'
+    if destination.is_symlink():
+        if destination.resolve() == source:
+            return destination
+        destination.unlink()
+    destination.symlink_to(source)
+    return destination
 
 
 def get_glm_input(**kwargs):
@@ -22,9 +48,9 @@ def get_glm_input(**kwargs):
 
     pd.options.mode.chained_assignment = None
 
-    if neighborhood_res:
+    if neighborhood_res is not None:
         if query not in list(neighborhood_res['query']): # skip if the vf was filtered out b/c of lack of hits decided by args.min_hits
-            return
+            return []
 
     # only keep queries that made it through filtering in main.py to reduce computations   
     if uniq_neighborhoods_d: # here for compatiblity with chop-genome, since it doesn't currently make this object
@@ -37,35 +63,34 @@ def get_glm_input(**kwargs):
 
     mmseqs_clust['strand_neighborhood'] = mmseqs_clust['strand'] + mmseqs_clust['rep'] # each protein in neighborhoods will be reprented by its cluster representative
     mmseqs_clust_grp = mmseqs_clust.groupby('neighborhood_name')
+
+    nn_objs = []
+    df_name = query
     
     neighborhood_name_prots = {}
-    for neighborhood_name in neighborhood_grp: # loop through neighborhoods to for gLM inputs
-        mmseqs_clust_sub = mmseqs_clust_grp.get_group(neighborhood_name)
-        # print("Size of mmseq_clust after filter by neighborhood_grp",len(mmseqs_clust_sub))
-        mmseqs_clust_sub.drop_duplicates(subset=['start'],inplace=True) # in case something duplicate rows were made w/ earlier mmseqs merge
-        mmseqs_clust_sub.reset_index(drop=True,inplace=True)
-        center = mmseqs_clust_sub.VF_center.iloc[0] + '!!!' + mmseqs_clust_sub.gff.iloc[0] 
-        mmseqs_clust_sub.sort_values(by='start',inplace=True) # this needs to be last in the loop. B/c reset_index reshuffles row locations
-        ind = np.flatnonzero([mmseqs_clust_sub['prot_gffname']==center]) # index of the VF center in the neighborhood used for identifying its embedding in gLM output
-        if len(ind) > 1:
-            logger.warning(f"Multiple VF centers with the same name found in neighborhood: {neighborhood_name} ... grabing first vf_center")
-
-        # assert int(mmseqs_clust_sub.start.iloc[-1]) -  int(mmseqs_clust_sub.start.iloc[0]) < args.neighborhood_size + 30000 # want to make sure that everything is working right, so if neighborhoods are much larger than expected, someting's wrong
-        try:
-            neighborhood_name_prots[neighborhood_name] = [';'.join(list(mmseqs_clust_sub.strand_neighborhood)),ind[0]]
-        except TypeError:
-            print("===== ",neighborhood_name," =====")
-            print(mmseqs_clust_sub['prot_gffname'])
-            print(mmseqs_clust_sub)
-            raise Exception
+    for neighborhood_name in sorted(neighborhood_grp):
+        raw = mmseqs_clust_grp.get_group(neighborhood_name)
+        ordered = ordered_occurrences(raw)
+        center = ordered.VF_center.iloc[0] + '!!!' + ordered.gff.iloc[0]
+        indices = np.flatnonzero(ordered['prot_gffname'].eq(center))
+        if len(indices) == 0:
+            raise ValueError(f"{neighborhood_name}: no VF center found")
+        if len(indices) > 1:
+            logger.info(f"{neighborhood_name}: multiple VF centers found, likely a duplication event")
+        index = int(indices[0])
+        labels = query_labels(raw.loc[raw.prot_gffname.eq(center), 'query'])
+        proteins = tuple(ordered['strand'] + ordered['rep'])
+        nn_objs.append(Neighborhood(
+            f"{args.out}{glm_input_dir}/{df_name}.tsv", neighborhood_name,
+            tuple(labels), proteins, index, ordered.rep.iloc[index]))
+        neighborhood_name_prots[neighborhood_name] = [';'.join(proteins), index]
 
     df = pd.DataFrame.from_dict(neighborhood_name_prots).T
     df.columns=['neighborhood','VF_center_index']
 
-    df_name = query
     df.to_csv(f"{args.out}{glm_input_dir}/{df_name}.tsv",sep='\t',header=False,mode="x")    
     
-    return 
+    return nn_objs
 
 def get_glm_fasta_input(fasta_path,args,glm_input_dir,**kwargs):
     query_grp = kwargs.get("query_grp",None)
@@ -94,8 +119,8 @@ def get_glm_fasta_input(fasta_path,args,glm_input_dir,**kwargs):
 def concat_tsv_fastas(directory, glm_input2_out, chunk, i):
     # this is a tempory fix for slow embedding computations...I discovered that embeddings are slow b/c its starting then processing one file at a time
     # the real fix should modify glm_input_frm_neighbors.py so that this function function doesn't need to happen
-    tsv_files = nc.glob.glob(f"{directory}/*.tsv")
-    # fasta_files = nc.glob.glob(f"{directory}/*.fasta")
+    tsv_files = glob.glob(f"{directory}/*.tsv")
+    # fasta_files = glob.glob(f"{directory}/*.fasta")
     chunk_files = [f for f in tsv_files if f.split('/')[-1].split('.tsv')[0] in chunk]
 
     output_file = f"{glm_input2_out}combined_chunk_{str(i)}.tsv"
@@ -104,7 +129,7 @@ def concat_tsv_fastas(directory, glm_input2_out, chunk, i):
     cmd = ['cat'] + chunk_files
         
     with open(output_file, 'w') as outfile:
-        nc.subprocess.run(cmd, stdout=outfile, check=True)
+        subprocess.run(cmd, stdout=outfile, check=True)
         
     print(f"Processed chunk {i}: {len(chunk_files)} files")
     return 

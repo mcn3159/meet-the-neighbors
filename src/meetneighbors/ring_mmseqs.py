@@ -11,7 +11,7 @@ def mmseqs_createdb(args):
     return 
 
 def mmseqs_search(args,genomes_db):
-    gpu = -1 # here until mmseqs team fixes the tset issue with gpu accelerated search
+    gpu = -1 # here until mmseqs team fixes the tset issue with gpu accelerated search. When fixed implement args.gpu
     if gpu > 0:
         subprocess.run(f"mmseqs makepaddedseqdb {genomes_db} {args.out}genomesdb_gpu --threads {args.threads}",shell=True,check=True)
         subprocess.run(f"rm {genomes_db}.*",shell=True,check=True) # base db file made from mmseqs is kept b/c if i rm it with the same strategy, I remove the gpu db as well
